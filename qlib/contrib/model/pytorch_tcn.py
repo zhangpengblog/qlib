@@ -15,7 +15,6 @@ from ...log import get_module_logger
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.nn.utils import weight_norm
 
 from .pytorch_utils import count_parameters
 from ...model.base import Model
@@ -34,7 +33,7 @@ class TCN(Model):
     n_chans: int
         number of channels
     metric: str
-        the evaluate metric used in early stop
+        the evaluation metric used in early stop
     optimizer : str
         optimizer name
     GPU : str
@@ -57,7 +56,7 @@ class TCN(Model):
         optimizer="adam",
         GPU=0,
         seed=None,
-        **kwargs
+        **kwargs,
     ):
         # Set logger.
         self.logger = get_module_logger("TCN")
@@ -155,16 +154,14 @@ class TCN(Model):
         raise ValueError("unknown loss `%s`" % self.loss)
 
     def metric_fn(self, pred, label):
-
         mask = torch.isfinite(label)
 
-        if self.metric == "" or self.metric == "loss":
+        if self.metric in ("", "loss"):
             return -self.loss_fn(pred[mask], label[mask])
 
         raise ValueError("unknown metric `%s`" % self.metric)
 
     def train_epoch(self, x_train, y_train):
-
         x_train_values = x_train.values
         y_train_values = np.squeeze(y_train.values)
 
@@ -174,7 +171,6 @@ class TCN(Model):
         np.random.shuffle(indices)
 
         for i in range(len(indices))[:: self.batch_size]:
-
             if len(indices) - i < self.batch_size:
                 break
 
@@ -201,7 +197,6 @@ class TCN(Model):
         indices = np.arange(len(x_values))
 
         for i in range(len(indices))[:: self.batch_size]:
-
             if len(indices) - i < self.batch_size:
                 break
 
@@ -224,7 +219,6 @@ class TCN(Model):
         evals_result=dict(),
         save_path=None,
     ):
-
         df_train, df_valid, df_test = dataset.prepare(
             ["train", "valid", "test"],
             col_set=["feature", "label"],
@@ -287,7 +281,6 @@ class TCN(Model):
         preds = []
 
         for begin in range(sample_num)[:: self.batch_size]:
-
             if sample_num - begin < self.batch_size:
                 end = sample_num
             else:

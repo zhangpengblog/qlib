@@ -6,9 +6,12 @@ from typing import Union, Callable
 
 from . import lazy_sort_index
 from .time import Freq, cal_sam_minute
+from ..config import C
 
 
-def resam_calendar(calendar_raw: np.ndarray, freq_raw: Union[str, Freq], freq_sam: Union[str, Freq]) -> np.ndarray:
+def resam_calendar(
+    calendar_raw: np.ndarray, freq_raw: Union[str, Freq], freq_sam: Union[str, Freq], region: str = None
+) -> np.ndarray:
     """
     Resample the calendar with frequency freq_raw into the calendar with frequency freq_sam
     Assumption:
@@ -22,12 +25,16 @@ def resam_calendar(calendar_raw: np.ndarray, freq_raw: Union[str, Freq], freq_sa
         Frequency of the raw calendar
     freq_sam : str
         Sample frequency
-
+    region: str
+        Region, for example, "cn", "us"
     Returns
     -------
     np.ndarray
         The calendar with frequency freq_sam
     """
+    if region is None:
+        region = C["region"]
+
     freq_raw = Freq(freq_raw)
     freq_sam = Freq(freq_sam)
     if not len(calendar_raw):
@@ -40,7 +47,7 @@ def resam_calendar(calendar_raw: np.ndarray, freq_raw: Union[str, Freq], freq_sa
         else:
             if freq_raw.count > freq_sam.count:
                 raise ValueError("raw freq must be higher than sampling freq")
-        _calendar_minute = np.unique(list(map(lambda x: cal_sam_minute(x, freq_sam.count), calendar_raw)))
+        _calendar_minute = np.unique(list(map(lambda x: cal_sam_minute(x, freq_sam.count, region), calendar_raw)))
         return _calendar_minute
 
     # else, convert the raw calendar into day calendar, and divide the whole calendar into several bars evenly
@@ -70,12 +77,12 @@ def get_higher_eq_freq_feature(instruments, fields, start_time=None, end_time=No
         the feature with higher or equal frequency
     """
 
-    from ..data.data import D
+    from ..data.data import D  # pylint: disable=C0415
 
     try:
         _result = D.features(instruments, fields, start_time, end_time, freq=freq, disk_cache=disk_cache)
         _freq = freq
-    except (ValueError, KeyError):
+    except (ValueError, KeyError) as value_key_e:
         _, norm_freq = Freq.parse(freq)
         if norm_freq in [Freq.NORM_FREQ_MONTH, Freq.NORM_FREQ_WEEK, Freq.NORM_FREQ_DAY]:
             try:
@@ -88,7 +95,7 @@ def get_higher_eq_freq_feature(instruments, fields, start_time=None, end_time=No
             _result = D.features(instruments, fields, start_time, end_time, freq="1min", disk_cache=disk_cache)
             _freq = "1min"
         else:
-            raise ValueError(f"freq {freq} is not supported")
+            raise ValueError(f"freq {freq} is not supported") from value_key_e
     return _result, _freq
 
 
@@ -172,7 +179,7 @@ def resam_ts_data(
 
     selector_datetime = slice(start_time, end_time)
 
-    from ..data.dataset.utils import get_level_index
+    from ..data.dataset.utils import get_level_index  # pylint: disable=C0415
 
     feature = lazy_sort_index(ts_feature)
 

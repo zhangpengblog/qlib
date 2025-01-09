@@ -4,7 +4,6 @@
 import re
 import abc
 import sys
-import importlib
 from io import BytesIO
 from typing import List, Iterable
 from pathlib import Path
@@ -12,6 +11,8 @@ from pathlib import Path
 import fire
 import requests
 import pandas as pd
+import baostock as bs
+from tqdm import tqdm
 from loguru import logger
 
 CUR_DIR = Path(__file__).resolve().parent
@@ -19,9 +20,12 @@ sys.path.append(str(CUR_DIR.parent.parent))
 
 from data_collector.index import IndexBase
 from data_collector.utils import get_calendar_list, get_trading_date_by_shift, deco_retry
+from data_collector.utils import get_instruments
 
 
-NEW_COMPANIES_URL = "https://csi-web-dev.oss-cn-shanghai-finance-1-pub.aliyuncs.com/static/html/csindex/public/uploads/file/autofile/cons/{index_code}cons.xls"
+NEW_COMPANIES_URL = (
+    "https://oss-ch.csindex.com.cn/static/html/csindex/public/uploads/file/autofile/cons/{index_code}cons.xls"
+)
 
 
 INDEX_CHANGES_URL = "https://www.csindex.com.cn/csindex-home/search/search-content?lang=cn&searchInput=%E5%85%B3%E4%BA%8E%E8%B0%83%E6%95%B4%E6%B2%AA%E6%B7%B1300%E5%92%8C%E4%B8%AD%E8%AF%81%E9%A6%99%E6%B8%AF100%E7%AD%89%E6%8C%87%E6%95%B0%E6%A0%B7%E6%9C%AC&pageNum={page_num}&pageSize={page_size}&sortField=date&dateRange=all&contentType=announcement"
@@ -36,7 +40,7 @@ def retry_request(url: str, method: str = "get", exclude_status: List = None):
     if exclude_status is None:
         exclude_status = []
     method_func = getattr(requests, method)
-    _resp = method_func(url, headers=REQ_HEADERS)
+    _resp = method_func(url, headers=REQ_HEADERS, timeout=None)
     _status = _resp.status_code
     if _status not in exclude_status and _status != 200:
         raise ValueError(f"response status: {_status}, url={url}")
@@ -87,7 +91,6 @@ class CSIIndex(IndexBase):
         raise NotImplementedError("rewrite index_code")
 
     @property
-    @abc.abstractmethod
     def html_table_index(self) -> int:
         """Which table of changes in html
 
@@ -95,7 +98,7 @@ class CSIIndex(IndexBase):
         CSI100: 1
         :return:
         """
-        raise NotImplementedError()
+        raise NotImplementedError("rewrite html_table_index")
 
     def format_datetime(self, inst_df: pd.DataFrame) -> pd.DataFrame:
         """formatting the datetime in an instrument
@@ -155,7 +158,7 @@ class CSIIndex(IndexBase):
             symbol
         """
         symbol = f"{int(symbol):06}"
-        return f"SH{symbol}" if symbol.startswith("60") else f"SZ{symbol}"
+        return f"SH{symbol}" if symbol.startswith("60") or symbol.startswith("688") else f"SZ{symbol}"
 
     def _parse_excel(self, excel_url: str, add_date: pd.Timestamp, remove_date: pd.Timestamp) -> pd.DataFrame:
         content = retry_request(excel_url, exclude_status=[404]).content
@@ -181,7 +184,7 @@ class CSIIndex(IndexBase):
         df = pd.DataFrame()
         _tmp_count = 0
         for _df in pd.read_html(content):
-            if _df.shape[-1] != 4:
+            if _df.shape[-1] != 4 or _df.isnull().loc(0)[0][0]:
                 continue
             _tmp_count += 1
             if self.html_table_index + 1 > _tmp_count:
@@ -209,6 +212,12 @@ class CSIIndex(IndexBase):
 
     def _read_change_from_url(self, url: str) -> pd.DataFrame:
         """read change from url
+        The parameter url is from the _get_change_notices_url method.
+        Determine the stock add_date/remove_date based on the title.
+        The response contains three cases:
+            1.Only excel_url(extract data from excel_url)
+            2.Both the excel_url and the body text(try to extract data from excel_url first, and then try to extract data from body text)
+            3.Only body text(extract data from body text)
 
         Parameters
         ----------
@@ -256,14 +265,18 @@ class CSIIndex(IndexBase):
                     excel_url = excel_url if excel_url.startswith("/") else "/" + excel_url
                     excel_url = f"http://www.csindex.com.cn{excel_url}"
         if excel_url:
-            logger.info(f"get {add_date} changes from excel, title={title}, excel_url={excel_url}")
             try:
+                logger.info(f"get {add_date} changes from the excel, title={title}, excel_url={excel_url}")
                 df = self._parse_excel(excel_url, add_date, remove_date)
             except ValueError:
-                logger.warning(f"error downloading file: {excel_url}, will parse the table from the content")
+                logger.info(
+                    f"get {add_date} changes from the web page, title={title}, url=https://www.csindex.com.cn/#/about/newsDetail?id={url.split('id=')[-1]}"
+                )
                 df = self._parse_table(_text, add_date, remove_date)
         else:
-            logger.info(f"get {add_date} changes from url content, title={title}")
+            logger.info(
+                f"get {add_date} changes from the web page, title={title}, url=https://www.csindex.com.cn/#/about/newsDetail?id={url.split('id=')[-1]}"
+            )
             df = self._parse_table(_text, add_date, remove_date)
         return df
 
@@ -313,7 +326,7 @@ class CSIIndex(IndexBase):
         return df
 
 
-class CSI300(CSIIndex):
+class CSI300Index(CSIIndex):
     @property
     def index_code(self):
         return "000300"
@@ -323,11 +336,11 @@ class CSI300(CSIIndex):
         return pd.Timestamp("2005-01-01")
 
     @property
-    def html_table_index(self):
-        return 1
+    def html_table_index(self) -> int:
+        return 0
 
 
-class CSI100(CSIIndex):
+class CSI100Index(CSIIndex):
     @property
     def index_code(self):
         return "000903"
@@ -337,49 +350,113 @@ class CSI100(CSIIndex):
         return pd.Timestamp("2006-05-29")
 
     @property
-    def html_table_index(self):
-        return 2
+    def html_table_index(self) -> int:
+        return 1
 
 
-def get_instruments(
-    qlib_dir: str,
-    index_name: str,
-    method: str = "parse_instruments",
-    freq: str = "day",
-    request_retry: int = 5,
-    retry_sleep: int = 3,
-):
-    """
+class CSI500Index(CSIIndex):
+    @property
+    def index_code(self) -> str:
+        return "000905"
 
-    Parameters
-    ----------
-    qlib_dir: str
-        qlib data dir, default "Path(__file__).parent/qlib_data"
-    index_name: str
-        index name, value from ["csi100", "csi300"]
-    method: str
-        method, value from ["parse_instruments", "save_new_companies"]
-    freq: str
-        freq, value from ["day", "1min"]
-    request_retry: int
-        request retry, by default 5
-    retry_sleep: int
-        request sleep, by default 3
+    @property
+    def bench_start_date(self) -> pd.Timestamp:
+        return pd.Timestamp("2007-01-15")
 
-    Examples
-    -------
-        # parse instruments
-        $ python collector.py --index_name CSI300 --qlib_dir ~/.qlib/qlib_data/cn_data --method parse_instruments
+    def get_changes(self) -> pd.DataFrame:
+        """get companies changes
 
-        # parse new companies
-        $ python collector.py --index_name CSI300 --qlib_dir ~/.qlib/qlib_data/cn_data --method save_new_companies
+        Return
+        --------
+           pd.DataFrame:
+               symbol      date        type
+               SH600000  2019-11-11    add
+               SH600000  2020-11-10    remove
+           dtypes:
+               symbol: str
+               date: pd.Timestamp
+               type: str, value from ["add", "remove"]
+        """
+        return self.get_changes_with_history_companies(self.get_history_companies())
 
-    """
-    _cur_module = importlib.import_module("data_collector.cn_index.collector")
-    obj = getattr(_cur_module, f"{index_name.upper()}")(
-        qlib_dir=qlib_dir, index_name=index_name, freq=freq, request_retry=request_retry, retry_sleep=retry_sleep
-    )
-    getattr(obj, method)()
+    def get_history_companies(self) -> pd.DataFrame:
+        """
+
+        Returns
+        -------
+
+            pd.DataFrame:
+                symbol      date        type
+                SH600000  2019-11-11    add
+                SH600000  2020-11-10    remove
+            dtypes:
+                symbol: str
+                date: pd.Timestamp
+                type: str, value from ["add", "remove"]
+        """
+        bs.login()
+        today = pd.Timestamp.now()
+        date_range = pd.DataFrame(pd.date_range(start="2007-01-15", end=today, freq="7D"))[0].dt.date
+        ret_list = []
+        for date in tqdm(date_range, desc="Download CSI500"):
+            result = self.get_data_from_baostock(date)
+            ret_list.append(result[["date", "symbol"]])
+        bs.logout()
+        return pd.concat(ret_list, sort=False)
+
+    @staticmethod
+    def get_data_from_baostock(date) -> pd.DataFrame:
+        """
+        Data source: http://baostock.com/baostock/index.php/%E4%B8%AD%E8%AF%81500%E6%88%90%E5%88%86%E8%82%A1
+        Avoid a large number of parallel data acquisition,
+        such as 1000 times of concurrent data acquisition, because IP will be blocked
+
+        Returns
+        -------
+            pd.DataFrame:
+                date      symbol        code_name
+                SH600039  2007-01-15    四川路桥
+                SH600051  2020-01-15    宁波联合
+            dtypes:
+                date: pd.Timestamp
+                symbol: str
+                code_name: str
+        """
+        col = ["date", "symbol", "code_name"]
+        rs = bs.query_zz500_stocks(date=str(date))
+        zz500_stocks = []
+        while (rs.error_code == "0") & rs.next():
+            zz500_stocks.append(rs.get_row_data())
+        result = pd.DataFrame(zz500_stocks, columns=col)
+        result["symbol"] = result["symbol"].apply(lambda x: x.replace(".", "").upper())
+        return result
+
+    def get_new_companies(self) -> pd.DataFrame:
+        """
+
+        Returns
+        -------
+            pd.DataFrame:
+
+                symbol     start_date    end_date
+                SH600000   2000-01-01    2099-12-31
+
+            dtypes:
+                symbol: str
+                start_date: pd.Timestamp
+                end_date: pd.Timestamp
+        """
+        logger.info("get new companies......")
+        today = pd.Timestamp.now().normalize()
+        bs.login()
+        result = self.get_data_from_baostock(today.strftime("%Y-%m-%d"))
+        bs.logout()
+        df = result[["date", "symbol"]]
+        df.columns = [self.END_DATE_FIELD, self.SYMBOL_FIELD_NAME]
+        df[self.END_DATE_FIELD] = today
+        df[self.START_DATE_FIELD] = self.bench_start_date
+        logger.info("end of get new companies.")
+        return df
 
 
 if __name__ == "__main__":

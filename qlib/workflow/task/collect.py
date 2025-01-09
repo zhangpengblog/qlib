@@ -10,6 +10,7 @@ from qlib.log import TimeInspector
 from typing import Callable, Dict, Iterable, List
 from qlib.log import get_module_logger
 from qlib.utils.serial import Serializable
+from qlib.utils.exceptions import LoadObjectError
 from qlib.workflow import R
 from qlib.workflow.exp import Experiment
 from qlib.workflow.recorder import Recorder
@@ -44,7 +45,7 @@ class Collector(Serializable):
 
             {"IC": {"Xgboost": pd.Series, "LSTM": pd.Series}}
 
-            ......
+            ...
         """
         raise NotImplementedError(f"Please implement the `collect` method.")
 
@@ -57,7 +58,7 @@ class Collector(Serializable):
         Args:
             collected_dict (dict): the dict return by `collect`
             process_list (list or Callable): the list of processors or the instance of a processor to process dict.
-            The processor order is the same as the list order.
+                The processor order is the same as the list order.
                 For example: [Group1(..., Ensemble1()), Group2(..., Ensemble2())]
 
         Returns:
@@ -96,7 +97,7 @@ class MergeCollector(Collector):
         A can collect {"prediction": pd.Series} and B can collect {"IC": {"Xgboost": pd.Series, "LSTM": pd.Series}}.
         Then after this class's collect, we can collect {"A_prediction": pd.Series, "B_IC": {"Xgboost": pd.Series, "LSTM": pd.Series}}
 
-        ......
+        ...
 
     """
 
@@ -168,7 +169,10 @@ class RecorderCollector(Collector):
         self.experiment = experiment
         self.artifacts_path = artifacts_path
         if rec_key_func is None:
-            rec_key_func = lambda rec: rec.info["id"]
+
+            def rec_key_func(rec):
+                return rec.info["id"]
+
         if artifacts_key is None:
             artifacts_key = list(self.artifacts_path.keys())
         self.rec_key_func = rec_key_func
@@ -228,9 +232,10 @@ class RecorderCollector(Collector):
                 else:
                     try:
                         artifact = rec.load_object(self.artifacts_path[key])
-                    except Exception as e:
+                    except LoadObjectError as e:
                         if only_exist:
                             # only collect existing artifact
+                            logger.warning(f"Fail to load {self.artifacts_path[key]} and it is ignored.")
                             continue
                         raise e
                 # give user some warning if the values are overridden

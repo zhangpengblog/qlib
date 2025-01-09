@@ -12,22 +12,17 @@ import queue
 import bisect
 import numpy as np
 import pandas as pd
-from multiprocessing import Pool
-from typing import Iterable, Union
-from typing import List, Union
+from typing import List, Union, Optional
 
 # For supporting multiprocessing in outer code, joblib is used
 from joblib import delayed
 
 from .cache import H
 from ..config import C
-from .base import Feature
-from .ops import Operators
 from .inst_processor import InstProcessor
 
 from ..log import get_module_logger
-from ..utils.time import Freq
-from .cache import DiskDatasetCache, DiskExpressionCache
+from .cache import DiskDatasetCache
 from ..utils import (
     Wrapper,
     init_instance_by_config,
@@ -37,12 +32,20 @@ from ..utils import (
     hash_args,
     normalize_cache_fields,
     code_to_fname,
-    set_log_with_config,
+    time_to_slc_point,
+    read_period_data,
+    get_period_list,
 )
 from ..utils.paral import ParallelExt
+from .ops import Operators  # pylint: disable=W0611  # noqa: F401
 
 
 class ProviderBackendMixin:
+    """
+    This helper class tries to make the provider based on storage backend more convenient
+    It is not necessary to inherent this class if that provider don't rely on the backend storage
+    """
+
     def get_default_backend(self):
         backend = {}
         provider_name: str = re.findall("[A-Z][^A-Z]*", self.__class__.__name__)[-2]
@@ -59,14 +62,11 @@ class ProviderBackendMixin:
         return init_instance_by_config(backend)
 
 
-class CalendarProvider(abc.ABC, ProviderBackendMixin):
+class CalendarProvider(abc.ABC):
     """Calendar provider base class
 
     Provide calendar data.
     """
-
-    def __init__(self, *args, **kwargs):
-        self.backend = kwargs.get("backend", {})
 
     def calendar(self, start_time=None, end_time=None, freq="day", future=False):
         """Get calendar of certain market in given time range.
@@ -108,14 +108,16 @@ class CalendarProvider(abc.ABC, ProviderBackendMixin):
         _, _, si, ei = self.locate_index(start_time, end_time, freq, future)
         return _calendar[si : ei + 1]
 
-    def locate_index(self, start_time, end_time, freq, future=False):
+    def locate_index(
+        self, start_time: Union[pd.Timestamp, str], end_time: Union[pd.Timestamp, str], freq: str, future: bool = False
+    ):
         """Locate the start time index and end time index in a calendar under certain frequency.
 
         Parameters
         ----------
-        start_time : str
+        start_time : pd.Timestamp
             start of the time range.
-        end_time : str
+        end_time : pd.Timestamp
             end of the time range.
         freq : str
             time frequency, available: year/quarter/month/week/day.
@@ -139,10 +141,10 @@ class CalendarProvider(abc.ABC, ProviderBackendMixin):
         if start_time not in calendar_index:
             try:
                 start_time = calendar[bisect.bisect_left(calendar, start_time)]
-            except IndexError:
+            except IndexError as index_e:
                 raise IndexError(
                     "`start_time` uses a future date, if you want to get future trading days, you can use: `future=True`"
-                )
+                ) from index_e
         start_index = calendar_index[start_time]
         if end_time not in calendar_index:
             end_time = calendar[bisect.bisect_right(calendar, end_time) - 1]
@@ -194,14 +196,11 @@ class CalendarProvider(abc.ABC, ProviderBackendMixin):
         raise NotImplementedError("Subclass of CalendarProvider must implement `load_calendar` method")
 
 
-class InstrumentProvider(abc.ABC, ProviderBackendMixin):
+class InstrumentProvider(abc.ABC):
     """Instrument provider base class
 
     Provide instrument data.
     """
-
-    def __init__(self, *args, **kwargs):
-        self.backend = kwargs.get("backend", {})
 
     @staticmethod
     def instruments(market: Union[List, str] = "all", filter_pipe: Union[List, None] = None):
@@ -221,7 +220,8 @@ class InstrumentProvider(abc.ABC, ProviderBackendMixin):
         ----------
         dict: if isinstance(market, str)
             dict of stockpool config.
-            {`market`=>base market name, `filter_pipe`=>list of filters}
+
+            {`market` => base market name, `filter_pipe` => list of filters}
 
             example :
 
@@ -244,7 +244,7 @@ class InstrumentProvider(abc.ABC, ProviderBackendMixin):
         """
         if isinstance(market, list):
             return market
-        from .filter import SeriesDFilter
+        from .filter import SeriesDFilter  # pylint: disable=C0415
 
         if filter_pipe is None:
             filter_pipe = []
@@ -304,14 +304,11 @@ class InstrumentProvider(abc.ABC, ProviderBackendMixin):
         raise ValueError(f"Unknown instrument type {inst}")
 
 
-class FeatureProvider(abc.ABC, ProviderBackendMixin):
+class FeatureProvider(abc.ABC):
     """Feature provider class
 
     Provide feature data.
     """
-
-    def __init__(self, *args, **kwargs):
-        self.backend = kwargs.get("backend", {})
 
     @abc.abstractmethod
     def feature(self, instrument, field, start_time, end_time, freq):
@@ -336,6 +333,51 @@ class FeatureProvider(abc.ABC, ProviderBackendMixin):
             data of a certain feature
         """
         raise NotImplementedError("Subclass of FeatureProvider must implement `feature` method")
+
+
+class PITProvider(abc.ABC):
+    @abc.abstractmethod
+    def period_feature(
+        self,
+        instrument,
+        field,
+        start_index: int,
+        end_index: int,
+        cur_time: pd.Timestamp,
+        period: Optional[int] = None,
+    ) -> pd.Series:
+        """
+        get the historical periods data series between `start_index` and `end_index`
+
+        Parameters
+        ----------
+        start_index: int
+            start_index is a relative index to the latest period to cur_time
+
+        end_index: int
+            end_index is a relative index to the latest period to cur_time
+            in most cases, the start_index and end_index will be a non-positive values
+            For example, start_index == -3 end_index == 0 and current period index is cur_idx,
+            then the data between [start_index + cur_idx, end_index + cur_idx] will be retrieved.
+
+        period: int
+            This is used for query specific period.
+            The period is represented with int in Qlib. (e.g. 202001 may represent the first quarter in 2020)
+            NOTE: `period`  will override `start_index` and `end_index`
+
+        Returns
+        -------
+        pd.Series
+            The index will be integers to indicate the periods of the data
+            An typical examples will be
+            TODO
+
+        Raises
+        ------
+        FileNotFoundError
+            This exception will be raised if the queried data do not exist.
+        """
+        raise NotImplementedError(f"Please implement the `period_feature` method")
 
 
 class ExpressionProvider(abc.ABC):
@@ -365,8 +407,12 @@ class ExpressionProvider(abc.ABC):
         return expression
 
     @abc.abstractmethod
-    def expression(self, instrument, field, start_time=None, end_time=None, freq="day"):
+    def expression(self, instrument, field, start_time=None, end_time=None, freq="day") -> pd.Series:
         """Get Expression data.
+
+        The responsibility of `expression`
+        - parse the `field` and `load` the according data.
+        - When loading the data, it should handle the time dependency of the data. `get_expression_instance` is commonly used in this method
 
         Parameters
         ----------
@@ -385,6 +431,14 @@ class ExpressionProvider(abc.ABC):
         -------
         pd.Series
             data of a certain expression
+
+            The data has two types of format
+
+            1) expression with datetime index
+
+            2) expression with integer index
+
+                - because the datetime is not as good as
         """
         raise NotImplementedError("Subclass of ExpressionProvider must implement `Expression` method")
 
@@ -482,7 +536,6 @@ class DatasetProvider(abc.ABC):
         """
         if len(fields) == 0:
             raise ValueError("fields cannot be empty")
-        fields = fields.copy()
         column_names = [str(f) for f in fields]
         return column_names
 
@@ -500,7 +553,7 @@ class DatasetProvider(abc.ABC):
         """
         normalize_column_names = normalize_cache_fields(column_names)
         # One process for one task, so that the memory will be freed quicker.
-        workers = max(min(C.kernels, len(instruments_d)), 1)
+        workers = max(min(C.get_kernels(freq), len(instruments_d)), 1)
 
         # create iterator
         if isinstance(instruments_d, dict):
@@ -513,7 +566,7 @@ class DatasetProvider(abc.ABC):
         for inst, spans in it:
             inst_l.append(inst)
             task_l.append(
-                delayed(DatasetProvider.expression_calculator)(
+                delayed(DatasetProvider.inst_calculator)(
                     inst, start_time, end_time, freq, normalize_column_names, spans, C, inst_processors
                 )
             )
@@ -536,17 +589,17 @@ class DatasetProvider(abc.ABC):
             data = DiskDatasetCache.cache_to_origin_data(data, column_names)
         else:
             data = pd.DataFrame(
-                index=pd.MultiIndex.from_arrays([[], []], names=("instrument", "datetime")), columns=column_names
+                index=pd.MultiIndex.from_arrays([[], []], names=("instrument", "datetime")),
+                columns=column_names,
+                dtype=np.float32,
             )
 
         return data
 
     @staticmethod
-    def expression_calculator(
-        inst, start_time, end_time, freq, column_names, spans=None, g_config=None, inst_processors=[]
-    ):
+    def inst_calculator(inst, start_time, end_time, freq, column_names, spans=None, g_config=None, inst_processors=[]):
         """
-        Calculate the expressions for one instrument, return a df result.
+        Calculate the expressions for **one** instrument, return a df result.
         If the expression has been calculated before, load from cache.
 
         return value: A data frame with index 'datetime' and other data columns.
@@ -554,11 +607,7 @@ class DatasetProvider(abc.ABC):
         """
         # FIXME: Windows OS or MacOS using spawn: https://docs.python.org/3.8/library/multiprocessing.html?highlight=spawn#contexts-and-start-methods
         # NOTE: This place is compatible with windows, windows multi-process is spawn
-        if not C.registered:
-            C.set_conf_from_C(g_config)
-            if C.logging_config:
-                set_log_with_config(C.logging_config)
-            C.register()
+        C.register_from_C(g_config)
 
         obj = dict()
         for field in column_names:
@@ -566,11 +615,13 @@ class DatasetProvider(abc.ABC):
             obj[field] = ExpressionD.expression(inst, field, start_time, end_time, freq)
 
         data = pd.DataFrame(obj)
-        _calendar = Cal.calendar(freq=freq)
-        data.index = _calendar[data.index.values.astype(int)]
+        if not data.empty and not np.issubdtype(data.index.dtype, np.dtype("M")):
+            # If the underlaying provides the data not in datetime format, we'll convert it into datetime format
+            _calendar = Cal.calendar(freq=freq)
+            data.index = _calendar[data.index.values.astype(int)]
         data.index.names = ["datetime"]
 
-        if spans is not None:
+        if not data.empty and spans is not None:
             mask = np.zeros(len(data), dtype=bool)
             for begin, end in spans:
                 mask |= (data.index >= begin) & (data.index <= end)
@@ -579,19 +630,20 @@ class DatasetProvider(abc.ABC):
         for _processor in inst_processors:
             if _processor:
                 _processor_obj = init_instance_by_config(_processor, accept_types=InstProcessor)
-                data = _processor_obj(data)
+                data = _processor_obj(data, instrument=inst)
         return data
 
 
-class LocalCalendarProvider(CalendarProvider):
+class LocalCalendarProvider(CalendarProvider, ProviderBackendMixin):
     """Local calendar data provider class
 
     Provide calendar data from local data source.
     """
 
-    def __init__(self, **kwargs):
-        super(LocalCalendarProvider, self).__init__(**kwargs)
-        self.remote = kwargs.get("remote", False)
+    def __init__(self, remote=False, backend={}):
+        super().__init__()
+        self.remote = remote
+        self.backend = backend
 
     def load_calendar(self, freq, future):
         """Load original calendar timestamp from file.
@@ -623,11 +675,15 @@ class LocalCalendarProvider(CalendarProvider):
         return [pd.Timestamp(x) for x in backend_obj]
 
 
-class LocalInstrumentProvider(InstrumentProvider):
+class LocalInstrumentProvider(InstrumentProvider, ProviderBackendMixin):
     """Local instrument data provider class
 
     Provide instrument data from local data source.
     """
+
+    def __init__(self, backend={}) -> None:
+        super().__init__()
+        self.backend = backend
 
     def _load_instruments(self, market, freq):
         return self.backend_obj(market=market, freq=freq).data
@@ -657,7 +713,7 @@ class LocalInstrumentProvider(InstrumentProvider):
         # filter
         filter_pipe = instruments["filter_pipe"]
         for filter_config in filter_pipe:
-            from . import filter as F
+            from . import filter as F  # pylint: disable=C0415
 
             filter_t = getattr(F, filter_config["filter_type"]).from_config(filter_config)
             _instruments_filtered = filter_t(_instruments_filtered, start_time, end_time, freq)
@@ -667,15 +723,16 @@ class LocalInstrumentProvider(InstrumentProvider):
         return _instruments_filtered
 
 
-class LocalFeatureProvider(FeatureProvider):
+class LocalFeatureProvider(FeatureProvider, ProviderBackendMixin):
     """Local feature data provider class
 
     Provide feature data from local data source.
     """
 
-    def __init__(self, **kwargs):
-        super(LocalFeatureProvider, self).__init__(**kwargs)
-        self.remote = kwargs.get("remote", False)
+    def __init__(self, remote=False, backend={}):
+        super().__init__()
+        self.remote = remote
+        self.backend = backend
 
     def feature(self, instrument, field, start_index, end_index, freq):
         # validate
@@ -684,20 +741,122 @@ class LocalFeatureProvider(FeatureProvider):
         return self.backend_obj(instrument=instrument, field=field, freq=freq)[start_index : end_index + 1]
 
 
+class LocalPITProvider(PITProvider):
+    # TODO: Add PIT backend file storage
+    # NOTE: This class is not multi-threading-safe!!!!
+
+    def period_feature(self, instrument, field, start_index, end_index, cur_time, period=None):
+        if not isinstance(cur_time, pd.Timestamp):
+            raise ValueError(
+                f"Expected pd.Timestamp for `cur_time`, got '{cur_time}'. Advices: you can't query PIT data directly(e.g. '$$roewa_q'), you must use `P` operator to convert data to each day (e.g. 'P($$roewa_q)')"
+            )
+
+        assert end_index <= 0  # PIT don't support querying future data
+
+        DATA_RECORDS = [
+            ("date", C.pit_record_type["date"]),
+            ("period", C.pit_record_type["period"]),
+            ("value", C.pit_record_type["value"]),
+            ("_next", C.pit_record_type["index"]),
+        ]
+        VALUE_DTYPE = C.pit_record_type["value"]
+
+        field = str(field).lower()[2:]
+        instrument = code_to_fname(instrument)
+
+        # {For acceleration
+        # start_index, end_index, cur_index = kwargs["info"]
+        # if cur_index == start_index:
+        #     if not hasattr(self, "all_fields"):
+        #         self.all_fields = []
+        #     self.all_fields.append(field)
+        #     if not hasattr(self, "period_index"):
+        #         self.period_index = {}
+        #     if field not in self.period_index:
+        #         self.period_index[field] = {}
+        # For acceleration}
+
+        if not field.endswith("_q") and not field.endswith("_a"):
+            raise ValueError("period field must ends with '_q' or '_a'")
+        quarterly = field.endswith("_q")
+        index_path = C.dpm.get_data_uri() / "financial" / instrument.lower() / f"{field}.index"
+        data_path = C.dpm.get_data_uri() / "financial" / instrument.lower() / f"{field}.data"
+        if not (index_path.exists() and data_path.exists()):
+            raise FileNotFoundError("No file is found.")
+        # NOTE: The most significant performance loss is here.
+        # Does the acceleration that makes the program complicated really matters?
+        # - It makes parameters of the interface complicate
+        # - It does not performance in the optimal way (places all the pieces together, we may achieve higher performance)
+        #    - If we design it carefully, we can go through for only once to get the historical evolution of the data.
+        # So I decide to deprecated previous implementation and keep the logic of the program simple
+        # Instead, I'll add a cache for the index file.
+        data = np.fromfile(data_path, dtype=DATA_RECORDS)
+
+        # find all revision periods before `cur_time`
+        cur_time_int = int(cur_time.year) * 10000 + int(cur_time.month) * 100 + int(cur_time.day)
+        loc = np.searchsorted(data["date"], cur_time_int, side="right")
+        if loc <= 0:
+            return pd.Series(dtype=C.pit_record_type["value"])
+        last_period = data["period"][:loc].max()  # return the latest quarter
+        first_period = data["period"][:loc].min()
+        period_list = get_period_list(first_period, last_period, quarterly)
+        if period is not None:
+            # NOTE: `period` has higher priority than `start_index` & `end_index`
+            if period not in period_list:
+                return pd.Series(dtype=C.pit_record_type["value"])
+            else:
+                period_list = [period]
+        else:
+            period_list = period_list[max(0, len(period_list) + start_index - 1) : len(period_list) + end_index]
+        value = np.full((len(period_list),), np.nan, dtype=VALUE_DTYPE)
+        for i, p in enumerate(period_list):
+            # last_period_index = self.period_index[field].get(period)  # For acceleration
+            value[i], now_period_index = read_period_data(
+                index_path, data_path, p, cur_time_int, quarterly  # , last_period_index  # For acceleration
+            )
+            # self.period_index[field].update({period: now_period_index})  # For acceleration
+        # NOTE: the index is period_list; So it may result in unexpected values(e.g. nan)
+        # when calculation between different features and only part of its financial indicator is published
+        series = pd.Series(value, index=period_list, dtype=VALUE_DTYPE)
+
+        # {For acceleration
+        # if cur_index == end_index:
+        #     self.all_fields.remove(field)
+        #     if not len(self.all_fields):
+        #         del self.all_fields
+        #         del self.period_index
+        # For acceleration}
+
+        return series
+
+
 class LocalExpressionProvider(ExpressionProvider):
     """Local expression data provider class
 
     Provide expression data from local data source.
     """
 
+    def __init__(self, time2idx=True):
+        super().__init__()
+        self.time2idx = time2idx
+
     def expression(self, instrument, field, start_time=None, end_time=None, freq="day"):
         expression = self.get_expression_instance(field)
-        start_time = pd.Timestamp(start_time)
-        end_time = pd.Timestamp(end_time)
-        _, _, start_index, end_index = Cal.locate_index(start_time, end_time, freq=freq, future=False)
-        lft_etd, rght_etd = expression.get_extended_window_size()
+        start_time = time_to_slc_point(start_time)
+        end_time = time_to_slc_point(end_time)
+
+        # Two kinds of queries are supported
+        # - Index-based expression: this may save a lot of memory because the datetime index is not saved on the disk
+        # - Data with datetime index expression: this will make it more convenient to integrating with some existing databases
+        if self.time2idx:
+            _, _, start_index, end_index = Cal.locate_index(start_time, end_time, freq=freq, future=False)
+            lft_etd, rght_etd = expression.get_extended_window_size()
+            query_start, query_end = max(0, start_index - lft_etd), end_index + rght_etd
+        else:
+            start_index, end_index = query_start, query_end = start_time, end_time
+
         try:
-            series = expression.load(instrument, max(0, start_index - lft_etd), end_index + rght_etd, freq)
+            series = expression.load(instrument, query_start, query_end, freq)
         except Exception as e:
             get_module_logger("data").debug(
                 f"Loading expression error: "
@@ -708,7 +867,7 @@ class LocalExpressionProvider(ExpressionProvider):
         # Ensure that each column type is consistent
         # FIXME:
         # 1) The stock data is currently float. If there is other types of data, this part needs to be re-implemented.
-        # 2) The the precision should be configurable
+        # 2) The precision should be configurable
         try:
             series = series.astype(np.float32)
         except ValueError:
@@ -726,8 +885,19 @@ class LocalDatasetProvider(DatasetProvider):
     Provide dataset data from local data source.
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, align_time: bool = True):
+        """
+        Parameters
+        ----------
+        align_time : bool
+            Will we align the time to calendar
+            the frequency is flexible in some dataset and can't be aligned.
+            For the data with fixed frequency with a shared calendar, the align data to the calendar will provides following benefits
+
+            - Align queries to the same parameters, so the cache can be shared.
+        """
+        super().__init__()
+        self.align_time = align_time
 
     def dataset(
         self,
@@ -740,14 +910,16 @@ class LocalDatasetProvider(DatasetProvider):
     ):
         instruments_d = self.get_instruments_d(instruments, freq)
         column_names = self.get_column_names(fields)
-        cal = Cal.calendar(start_time, end_time, freq)
-        if len(cal) == 0:
-            return pd.DataFrame(
-                index=pd.MultiIndex.from_arrays([[], []], names=("instrument", "datetime")), columns=column_names
-            )
-        start_time = cal[0]
-        end_time = cal[-1]
-
+        if self.align_time:
+            # NOTE: if the frequency is a fixed value.
+            # align the data to fixed calendar point
+            cal = Cal.calendar(start_time, end_time, freq)
+            if len(cal) == 0:
+                return pd.DataFrame(
+                    index=pd.MultiIndex.from_arrays([[], []], names=("instrument", "datetime")), columns=column_names
+                )
+            start_time = cal[0]
+            end_time = cal[-1]
         data = self.dataset_processor(
             instruments_d, column_names, start_time, end_time, freq, inst_processors=inst_processors
         )
@@ -923,7 +1095,6 @@ class ClientDatasetProvider(DatasetProvider):
                 else:
                     return data
         else:
-
             """
             Call the server to generate the data-set cache, get the uri of the cache file.
             Then load the data from the file on NFS directly.
@@ -962,12 +1133,14 @@ class ClientDatasetProvider(DatasetProvider):
                 if return_uri:
                     return df, feature_uri
                 return df
-            except AttributeError:
-                raise IOError("Unable to fetch instruments from remote server!")
+            except AttributeError as attribute_e:
+                raise IOError("Unable to fetch instruments from remote server!") from attribute_e
 
 
 class BaseProvider:
     """Local provider class
+    It is a set of interface that allow users to access data.
+    Because PITD is not exposed publicly to users, so it is not included in the interface.
 
     To keep compatible with old qlib provider.
     """
@@ -997,10 +1170,11 @@ class BaseProvider:
         inst_processors=[],
     ):
         """
-        Parameters:
-        -----------
+        Parameters
+        ----------
         disk_cache : int
             whether to skip(0)/use(1)/replace(2) disk_cache
+
 
         This function will try to use cache method which has a keyword `disk_cache`,
         and will use provider method if a type error is raised because the DatasetD instance
@@ -1051,10 +1225,12 @@ class ClientProvider(BaseProvider):
     """Client Provider
 
     Requesting data from server as a client. Can propose requests:
+
         - Calendar : Directly respond a list of calendars
         - Instruments (without filter): Directly respond a list/dict of instruments
         - Instruments (with filters):  Respond a list/dict of instruments
         - Features : Respond a cache uri
+
     The general workflow is described as follows:
     When the user use client provider to propose a request, the client provider will connect the server and send the request. The client will start to wait for the response. The response will be made instantly indicating whether the cache is available. The waiting procedure will terminate only when the client get the response saying `feature_available` is true.
     `BUG` : Everytime we make request for certain data we need to connect to the server, wait for the response and disconnect from it. We can't make a sequence of requests within one connection. You can refer to https://python-socketio.readthedocs.io/en/latest/client.html for documentation of python-socketIO client.
@@ -1069,7 +1245,7 @@ class ClientProvider(BaseProvider):
 
             return isinstance(instance, cls)
 
-        from .client import Client
+        from .client import Client  # pylint: disable=C0415
 
         self.client = Client(C.flask_server, C.flask_port)
         self.logger = get_module_logger(self.__class__.__name__)
@@ -1091,6 +1267,7 @@ if sys.version_info >= (3, 9):
     CalendarProviderWrapper = Annotated[CalendarProvider, Wrapper]
     InstrumentProviderWrapper = Annotated[InstrumentProvider, Wrapper]
     FeatureProviderWrapper = Annotated[FeatureProvider, Wrapper]
+    PITProviderWrapper = Annotated[PITProvider, Wrapper]
     ExpressionProviderWrapper = Annotated[ExpressionProvider, Wrapper]
     DatasetProviderWrapper = Annotated[DatasetProvider, Wrapper]
     BaseProviderWrapper = Annotated[BaseProvider, Wrapper]
@@ -1098,6 +1275,7 @@ else:
     CalendarProviderWrapper = CalendarProvider
     InstrumentProviderWrapper = InstrumentProvider
     FeatureProviderWrapper = FeatureProvider
+    PITProviderWrapper = PITProvider
     ExpressionProviderWrapper = ExpressionProvider
     DatasetProviderWrapper = DatasetProvider
     BaseProviderWrapper = BaseProvider
@@ -1105,6 +1283,7 @@ else:
 Cal: CalendarProviderWrapper = Wrapper()
 Inst: InstrumentProviderWrapper = Wrapper()
 FeatureD: FeatureProviderWrapper = Wrapper()
+PITD: PITProviderWrapper = Wrapper()
 ExpressionD: ExpressionProviderWrapper = Wrapper()
 DatasetD: DatasetProviderWrapper = Wrapper()
 D: BaseProviderWrapper = Wrapper()
@@ -1129,6 +1308,11 @@ def register_all_wrappers(C):
         feature_provider = init_instance_by_config(C.feature_provider, module)
         register_wrapper(FeatureD, feature_provider, "qlib.data")
         logger.debug(f"registering FeatureD {C.feature_provider}")
+
+    if getattr(C, "pit_provider", None) is not None:
+        pit_provider = init_instance_by_config(C.pit_provider, module)
+        register_wrapper(PITD, pit_provider, "qlib.data")
+        logger.debug(f"registering PITD {C.pit_provider}")
 
     if getattr(C, "expression_provider", None) is not None:
         # This provider is unnecessary in client provider

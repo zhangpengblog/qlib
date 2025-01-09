@@ -5,7 +5,6 @@
 from __future__ import division
 from __future__ import print_function
 
-import os
 import numpy as np
 import pandas as pd
 import copy
@@ -19,7 +18,6 @@ from torch.utils.data import Sampler
 
 from .pytorch_utils import count_parameters
 from ...model.base import Model
-from ...data.dataset import DatasetH
 from ...data.dataset.handler import DataHandlerLP
 from ...contrib.model.pytorch_lstm import LSTMModel
 from ...contrib.model.pytorch_gru import GRUModel
@@ -34,7 +32,6 @@ class DailyBatchSampler(Sampler):
         self.daily_index[0] = 0
 
     def __iter__(self):
-
         for idx, count in zip(self.daily_index, self.daily_count):
             yield np.arange(idx, idx + count)
 
@@ -52,7 +49,7 @@ class GATs(Model):
     d_feat : int
         input dimensions for each time step
     metric : str
-        the evaluate metric used in early stop
+        the evaluation metric used in early stop
     optimizer : str
         optimizer name
     GPU : int
@@ -76,7 +73,7 @@ class GATs(Model):
         GPU=0,
         n_jobs=10,
         seed=None,
-        **kwargs
+        **kwargs,
     ):
         # Set logger.
         self.logger = get_module_logger("GATs")
@@ -175,10 +172,9 @@ class GATs(Model):
         raise ValueError("unknown loss `%s`" % self.loss)
 
     def metric_fn(self, pred, label):
-
         mask = torch.isfinite(label)
 
-        if self.metric == "" or self.metric == "loss":
+        if self.metric in ("", "loss"):
             return -self.loss_fn(pred[mask], label[mask])
 
         raise ValueError("unknown metric `%s`" % self.metric)
@@ -196,11 +192,9 @@ class GATs(Model):
         return daily_index, daily_count
 
     def train_epoch(self, data_loader):
-
         self.GAT_model.train()
 
         for data in data_loader:
-
             data = data.squeeze()
             feature = data[:, :, 0:-1].to(self.device)
             label = data[:, -1, -1].to(self.device)
@@ -214,14 +208,12 @@ class GATs(Model):
             self.train_optimizer.step()
 
     def test_epoch(self, data_loader):
-
         self.GAT_model.eval()
 
         scores = []
         losses = []
 
         for data in data_loader:
-
             data = data.squeeze()
             feature = data[:, :, 0:-1].to(self.device)
             # feature[torch.isnan(feature)] = 0
@@ -242,7 +234,6 @@ class GATs(Model):
         evals_result=dict(),
         save_path=None,
     ):
-
         dl_train = dataset.prepare("train", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
         dl_valid = dataset.prepare("valid", col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)
         if dl_train.empty or dl_valid.empty:
@@ -279,7 +270,9 @@ class GATs(Model):
             pretrained_model.load_state_dict(torch.load(self.model_path, map_location=self.device))
 
         model_dict = self.GAT_model.state_dict()
-        pretrained_dict = {k: v for k, v in pretrained_model.state_dict().items() if k in model_dict}
+        pretrained_dict = {
+            k: v for k, v in pretrained_model.state_dict().items() if k in model_dict  # pylint: disable=E1135
+        }
         model_dict.update(pretrained_dict)
         self.GAT_model.load_state_dict(model_dict)
         self.logger.info("Loading pretrained model Done...")
@@ -329,7 +322,6 @@ class GATs(Model):
         preds = []
 
         for data in test_loader:
-
             data = data.squeeze()
             feature = data[:, :, 0:-1].to(self.device)
 

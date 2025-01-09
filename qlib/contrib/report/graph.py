@@ -15,7 +15,6 @@ from plotly.figure_factory import create_distplot
 
 
 class BaseGraph:
-
     _name = None
 
     def __init__(
@@ -177,7 +176,7 @@ class HeatmapGraph(BaseGraph):
                 x=self._df.columns,
                 y=self._df.index,
                 z=self._df.values.tolist(),
-                **self._graph_kwargs
+                **self._graph_kwargs,
             )
         ]
         return _data
@@ -214,7 +213,7 @@ class SubplotsGraph:
         sub_graph_layout: dict = None,
         sub_graph_data: list = None,
         subplots_kwargs: dict = None,
-        **kwargs
+        **kwargs,
     ):
         """
 
@@ -282,8 +281,10 @@ class SubplotsGraph:
         if self._subplots_kwargs is None:
             self._init_subplots_kwargs()
 
-        self.__cols = self._subplots_kwargs.get("cols", 2)
-        self.__rows = self._subplots_kwargs.get("rows", math.ceil(len(self._df.columns) / self.__cols))
+        self.__cols = self._subplots_kwargs.get("cols", 2)  # pylint: disable=W0238
+        self.__rows = self._subplots_kwargs.get(  # pylint: disable=W0238
+            "rows", math.ceil(len(self._df.columns) / self.__cols)
+        )
 
         self._sub_graph_data = sub_graph_data
         if self._sub_graph_data is None:
@@ -354,7 +355,7 @@ class SubplotsGraph:
                         df=self._df.loc[:, [column_name]],
                         name_dict={column_name: temp_name},
                         graph_kwargs=_graph_kwargs,
-                    )
+                    ),
                 )
             else:
                 raise TypeError()

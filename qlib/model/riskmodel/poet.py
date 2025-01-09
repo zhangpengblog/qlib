@@ -43,7 +43,6 @@ class POETCovEstimator(RiskModel):
         self.thresh_method = thresh_method
 
     def _predict(self, X: np.ndarray) -> np.ndarray:
-
         Y = X.T  # NOTE: to match POET's implementation
         p, n = Y.shape
 
@@ -63,7 +62,7 @@ class POETCovEstimator(RiskModel):
         lamb = rate * self.thresh
         SuPCA = uhat.dot(uhat.T) / n
         SuDiag = np.diag(np.diag(SuPCA))
-        R = np.linalg.inv(SuDiag ** 0.5).dot(SuPCA).dot(np.linalg.inv(SuDiag ** 0.5))
+        R = np.linalg.inv(SuDiag**0.5).dot(SuPCA).dot(np.linalg.inv(SuDiag**0.5))
 
         if self.thresh_method == self.THRESH_HARD:
             M = R * (np.abs(R) > lamb)
@@ -78,7 +77,7 @@ class POETCovEstimator(RiskModel):
             M = M1 + M2 + M3
 
         Rthresh = M - np.diag(np.diag(M)) + np.eye(p)
-        SigmaU = (SuDiag ** 0.5).dot(Rthresh).dot(SuDiag ** 0.5)
+        SigmaU = (SuDiag**0.5).dot(Rthresh).dot(SuDiag**0.5)
         SigmaY = SigmaU + Lowrank
 
         return SigmaY

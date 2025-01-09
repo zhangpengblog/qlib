@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 import abc
-from typing import Union, Text
+from typing import Union, Text, Optional
 import numpy as np
 import pandas as pd
 
@@ -11,6 +11,8 @@ from ...constant import EPS
 from .utils import fetch_df_by_index
 from ...utils.serial import Serializable
 from ...utils.paral import datetime_groupby_apply
+from qlib.data.inst_processor import InstProcessor
+from qlib.data import D
 
 
 def get_group_columns(df: pd.DataFrame, group: Union[Text, None]):
@@ -42,7 +44,6 @@ class Processor(Serializable):
             processor, i.e. `df`.
 
         """
-        pass
 
     @abc.abstractmethod
     def __call__(self, df: pd.DataFrame):
@@ -57,7 +58,6 @@ class Processor(Serializable):
         df : pd.DataFrame
             The raw_df of handler or result from previous processor.
         """
-        pass
 
     def is_for_infer(self) -> bool:
         """
@@ -132,7 +132,6 @@ class FilterCol(Processor):
         self.col_list = col_list
 
     def __call__(self, df):
-
         cols = get_group_columns(df, self.fields_group)
         all_cols = df.columns
         diff_cols = np.setdiff1d(all_cols.get_level_values(-1), cols.get_level_values(-1))
@@ -189,7 +188,13 @@ class Fillna(Processor):
             df.fillna(self.fill_value, inplace=True)
         else:
             cols = get_group_columns(df, self.fields_group)
-            df.fillna({col: self.fill_value for col in cols}, inplace=True)
+            # this implementation is extremely slow
+            # df.fillna({col: self.fill_value for col in cols}, inplace=True)
+
+            # So we use numpy to accelerate filling values
+            nan_select = np.isnan(df.values)
+            nan_select[:, ~df.columns.isin(cols)] = False
+            df.values[nan_select] = self.fill_value
         return df
 
 
@@ -201,22 +206,25 @@ class MinMaxNorm(Processor):
         self.fit_end_time = fit_end_time
         self.fields_group = fields_group
 
-    def fit(self, df):
+    def fit(self, df: pd.DataFrame = None):
         df = fetch_df_by_index(df, slice(self.fit_start_time, self.fit_end_time), level="datetime")
         cols = get_group_columns(df, self.fields_group)
         self.min_val = np.nanmin(df[cols].values, axis=0)
         self.max_val = np.nanmax(df[cols].values, axis=0)
         self.ignore = self.min_val == self.max_val
+        # To improve the speed, we set the value of `min_val` to `0` for the columns that do not need to be processed,
+        # and the value of `max_val` to `1`, when using `(x - min_val) / (max_val - min_val)` for uniform calculation,
+        # the columns that do not need to be processed will be calculated by `(x - 0) / (1 - 0)`,
+        # as you can see, the columns that do not need to be processed, will not be affected.
+        for _i, _con in enumerate(self.ignore):
+            if _con:
+                self.min_val[_i] = 0
+                self.max_val[_i] = 1
         self.cols = cols
 
     def __call__(self, df):
-        def normalize(x, min_val=self.min_val, max_val=self.max_val, ignore=self.ignore):
-            if (~ignore).all():
-                return (x - min_val) / (max_val - min_val)
-            for i in range(ignore.size):
-                if not ignore[i]:
-                    x[i] = (x[i] - min_val) / (max_val - min_val)
-            return x
+        def normalize(x, min_val=self.min_val, max_val=self.max_val):
+            return (x - min_val) / (max_val - min_val)
 
         df.loc(axis=1)[self.cols] = normalize(df[self.cols].values)
         return df
@@ -232,22 +240,25 @@ class ZScoreNorm(Processor):
         self.fit_end_time = fit_end_time
         self.fields_group = fields_group
 
-    def fit(self, df):
+    def fit(self, df: pd.DataFrame = None):
         df = fetch_df_by_index(df, slice(self.fit_start_time, self.fit_end_time), level="datetime")
         cols = get_group_columns(df, self.fields_group)
         self.mean_train = np.nanmean(df[cols].values, axis=0)
         self.std_train = np.nanstd(df[cols].values, axis=0)
         self.ignore = self.std_train == 0
+        # To improve the speed, we set the value of `std_train` to `1` for the columns that do not need to be processed,
+        # and the value of `mean_train` to `0`, when using `(x - mean_train) / std_train` for uniform calculation,
+        # the columns that do not need to be processed will be calculated by `(x - 0) / 1`,
+        # as you can see, the columns that do not need to be processed, will not be affected.
+        for _i, _con in enumerate(self.ignore):
+            if _con:
+                self.std_train[_i] = 1
+                self.mean_train[_i] = 0
         self.cols = cols
 
     def __call__(self, df):
-        def normalize(x, mean_train=self.mean_train, std_train=self.std_train, ignore=self.ignore):
-            if (~ignore).all():
-                return (x - mean_train) / std_train
-            for i in range(ignore.size):
-                if not ignore[i]:
-                    x[i] = (x[i] - mean_train) / std_train
-            return x
+        def normalize(x, mean_train=self.mean_train, std_train=self.std_train):
+            return (x - mean_train) / std_train
 
         df.loc(axis=1)[self.cols] = normalize(df[self.cols].values)
         return df
@@ -272,7 +283,7 @@ class RobustZScoreNorm(Processor):
         self.fields_group = fields_group
         self.clip_outlier = clip_outlier
 
-    def fit(self, df):
+    def fit(self, df: pd.DataFrame = None):
         df = fetch_df_by_index(df, slice(self.fit_start_time, self.fit_end_time), level="datetime")
         self.cols = get_group_columns(df, self.fields_group)
         X = df[self.cols].values
@@ -285,9 +296,9 @@ class RobustZScoreNorm(Processor):
         X = df[self.cols]
         X -= self.mean_train
         X /= self.std_train
-        df[self.cols] = X
         if self.clip_outlier:
-            df.clip(-3, 3, inplace=True)
+            X = np.clip(X, -3, 3)
+        df[self.cols] = X
         return df
 
 
@@ -307,9 +318,13 @@ class CSZScoreNorm(Processor):
         # try not modify original dataframe
         if not isinstance(self.fields_group, list):
             self.fields_group = [self.fields_group]
-        for g in self.fields_group:
-            cols = get_group_columns(df, g)
-            df[cols] = df[cols].groupby("datetime").apply(self.zscore_func)
+        # depress warning by references:
+        # https://stackoverflow.com/questions/20625582/how-to-deal-with-settingwithcopywarning-in-pandas
+        # https://pandas.pydata.org/pandas-docs/stable/user_guide/options.html#getting-and-setting-options
+        with pd.option_context("mode.chained_assignment", None):
+            for g in self.fields_group:
+                cols = get_group_columns(df, g)
+                df[cols] = df[cols].groupby("datetime", group_keys=False).apply(self.zscore_func)
         return df
 
 
@@ -320,6 +335,20 @@ class CSRankNorm(Processor):
     The operations across different stocks are often called Cross Sectional Operation.
 
     For example, CSRankNorm is an operation that grouping the data by each day and rank `across` all the stocks in each day.
+
+    Explanation about 3.46 & 0.5
+
+    .. code-block:: python
+
+        import numpy as np
+        import pandas as pd
+        x = np.random.random(10000)  # for any variable
+        x_rank = pd.Series(x).rank(pct=True)  # if it is converted to rank, it will be a uniform distributed
+        x_rank_norm = (x_rank - x_rank.mean()) / x_rank.std()  # Normally, we will normalize it to make it like normal distribution
+
+        x_rank.mean()   # accounts for 0.5
+        1 / x_rank.std()  # accounts for 3.46
+
     """
 
     def __init__(self, fields_group=None):
@@ -343,7 +372,7 @@ class CSZFillna(Processor):
 
     def __call__(self, df):
         cols = get_group_columns(df, self.fields_group)
-        df[cols] = df[cols].groupby("datetime").apply(lambda x: x.fillna(x.mean()))
+        df[cols] = df[cols].groupby("datetime", group_keys=False).apply(lambda x: x.fillna(x.mean()))
         return df
 
 
@@ -351,6 +380,45 @@ class HashStockFormat(Processor):
     """Process the storage of from df into hasing stock format"""
 
     def __call__(self, df: pd.DataFrame):
-        from .storage import HasingStockStorage
+        from .storage import HashingStockStorage  # pylint: disable=C0415
 
-        return HasingStockStorage.from_df(df)
+        return HashingStockStorage.from_df(df)
+
+
+class TimeRangeFlt(InstProcessor):
+    """
+    This is a filter to filter stock.
+    Only keep the data that exist from start_time to end_time (the existence in the middle is not checked.)
+    WARNING:  It may induce leakage!!!
+    """
+
+    def __init__(
+        self,
+        start_time: Optional[Union[pd.Timestamp, str]] = None,
+        end_time: Optional[Union[pd.Timestamp, str]] = None,
+        freq: str = "day",
+    ):
+        """
+        Parameters
+        ----------
+        start_time : Optional[Union[pd.Timestamp, str]]
+            The data must start earlier (or equal) than `start_time`
+            None indicates data will not be filtered based on `start_time`
+        end_time : Optional[Union[pd.Timestamp, str]]
+            similar to start_time
+        freq : str
+            The frequency of the calendar
+        """
+        # Align to calendar before filtering
+        cal = D.calendar(start_time=start_time, end_time=end_time, freq=freq)
+        self.start_time = None if start_time is None else cal[0]
+        self.end_time = None if end_time is None else cal[-1]
+
+    def __call__(self, df: pd.DataFrame, instrument, *args, **kwargs):
+        if (
+            df.empty
+            or (self.start_time is None or df.index.min() <= self.start_time)
+            and (self.end_time is None or df.index.max() >= self.end_time)
+        ):
+            return df
+        return df.head(0)

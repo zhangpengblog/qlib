@@ -5,7 +5,6 @@
 from __future__ import division
 from __future__ import print_function
 
-import os
 import numpy as np
 import pandas as pd
 from typing import Text, Union
@@ -34,7 +33,7 @@ class GATs(Model):
     d_feat : int
         input dimensions for each time step
     metric : str
-        the evaluate metric used in early stop
+        the evaluation metric used in early stop
     optimizer : str
         optimizer name
     GPU : int
@@ -57,7 +56,7 @@ class GATs(Model):
         optimizer="adam",
         GPU=0,
         seed=None,
-        **kwargs
+        **kwargs,
     ):
         # Set logger.
         self.logger = get_module_logger("GATs")
@@ -155,10 +154,9 @@ class GATs(Model):
         raise ValueError("unknown loss `%s`" % self.loss)
 
     def metric_fn(self, pred, label):
-
         mask = torch.isfinite(label)
 
-        if self.metric == "" or self.metric == "loss":
+        if self.metric in ("", "loss"):
             return -self.loss_fn(pred[mask], label[mask])
 
         raise ValueError("unknown metric `%s`" % self.metric)
@@ -176,7 +174,6 @@ class GATs(Model):
         return daily_index, daily_count
 
     def train_epoch(self, x_train, y_train):
-
         x_train_values = x_train.values
         y_train_values = np.squeeze(y_train.values)
         self.GAT_model.train()
@@ -198,7 +195,6 @@ class GATs(Model):
             self.train_optimizer.step()
 
     def test_epoch(self, data_x, data_y):
-
         # prepare training data
         x_values = data_x.values
         y_values = np.squeeze(data_y.values)
@@ -231,7 +227,6 @@ class GATs(Model):
         evals_result=dict(),
         save_path=None,
     ):
-
         df_train, df_valid, df_test = dataset.prepare(
             ["train", "valid", "test"],
             col_set=["feature", "label"],
@@ -263,7 +258,9 @@ class GATs(Model):
             pretrained_model.load_state_dict(torch.load(self.model_path, map_location=self.device))
 
         model_dict = self.GAT_model.state_dict()
-        pretrained_dict = {k: v for k, v in pretrained_model.state_dict().items() if k in model_dict}
+        pretrained_dict = {
+            k: v for k, v in pretrained_model.state_dict().items() if k in model_dict  # pylint: disable=E1135
+        }
         model_dict.update(pretrained_dict)
         self.GAT_model.load_state_dict(model_dict)
         self.logger.info("Loading pretrained model Done...")

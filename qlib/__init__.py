@@ -2,11 +2,11 @@
 # Licensed under the MIT License.
 from pathlib import Path
 
-__version__ = "0.8.1.99"
+__version__ = "0.9.6.99"
 __version__bak = __version__  # This version is backup for QlibConfig.reset_qlib_version
 import os
 from typing import Union
-import yaml
+from ruamel.yaml import YAML
 import logging
 import platform
 import subprocess
@@ -31,11 +31,10 @@ def init(default_conf="client", **kwargs):
             When using the recorder, skip_if_reg can set to True to avoid loss of recorder.
 
     """
-    from .config import C
-    from .data.cache import H
+    from .config import C  # pylint: disable=C0415
+    from .data.cache import H  # pylint: disable=C0415
 
-    # FIXME: this logger ignored the level in config
-    logger = get_module_logger("Initialization", level=logging.INFO)
+    logger = get_module_logger("Initialization")
 
     skip_if_reg = kwargs.pop("skip_if_reg", False)
     if skip_if_reg and C.registered:
@@ -48,6 +47,7 @@ def init(default_conf="client", **kwargs):
     if clear_mem_cache:
         H.clear()
     C.set(default_conf, **kwargs)
+    get_module_logger.setLevel(C.logging_level)
 
     # mount nfs
     for _freq, provider_uri in C.provider_uri.items():
@@ -77,7 +77,6 @@ def init(default_conf="client", **kwargs):
 
 
 def _mount_nfs_uri(provider_uri, mount_path, auto_mount: bool = False):
-
     LOG = get_module_logger("mount nfs", level=logging.INFO)
     if mount_path is None:
         raise ValueError(f"Invalid mount path: {mount_path}!")
@@ -86,7 +85,7 @@ def _mount_nfs_uri(provider_uri, mount_path, auto_mount: bool = False):
     mount_command = "sudo mount.nfs %s %s" % (provider_uri, mount_path)
     # If the provider uri looks like this 172.23.233.89//data/csdesign'
     # It will be a nfs path. The client provider will be used
-    if not auto_mount:
+    if not auto_mount:  # pylint: disable=R1702
         if not Path(mount_path).exists():
             raise FileNotFoundError(
                 f"Invalid mount path: {mount_path}! Please mount manually: {mount_command} or Set init parameter `auto_mount=True`"
@@ -94,7 +93,7 @@ def _mount_nfs_uri(provider_uri, mount_path, auto_mount: bool = False):
     else:
         # Judging system type
         sys_type = platform.system()
-        if "win" in sys_type.lower():
+        if "windows" in sys_type.lower():
             # system: window
             exec_result = os.popen(f"mount -o anon {provider_uri} {mount_path}")
             result = exec_result.read()
@@ -113,6 +112,8 @@ def _mount_nfs_uri(provider_uri, mount_path, auto_mount: bool = False):
             # system: linux/Unix/Mac
             # check mount
             _remote_uri = provider_uri[:-1] if provider_uri.endswith("/") else provider_uri
+            # `mount a /b/c` is different from `mount a /b/c/`. So we convert it into string to make sure handling it accurately
+            mount_path = str(mount_path)
             _mount_path = mount_path[:-1] if mount_path.endswith("/") else mount_path
             _check_level_num = 2
             _is_mount = False
@@ -140,8 +141,10 @@ def _mount_nfs_uri(provider_uri, mount_path, auto_mount: bool = False):
             if not _is_mount:
                 try:
                     Path(mount_path).mkdir(parents=True, exist_ok=True)
-                except Exception:
-                    raise OSError(f"Failed to create directory {mount_path}, please create {mount_path} manually!")
+                except Exception as e:
+                    raise OSError(
+                        f"Failed to create directory {mount_path}, please create {mount_path} manually!"
+                    ) from e
 
                 # check nfs-common
                 command_res = os.popen("dpkg -l | grep nfs-common")
@@ -173,7 +176,8 @@ def init_from_yaml_conf(conf_path, **kwargs):
         config = {}
     else:
         with open(conf_path) as f:
-            config = yaml.safe_load(f)
+            yaml = YAML(typ="safe", pure=True)
+            config = yaml.load(f)
     config.update(kwargs)
     default_conf = config.pop("default_conf", "client")
     init(default_conf, **config)
@@ -269,7 +273,8 @@ def auto_init(**kwargs):
         logger = get_module_logger("Initialization")
         conf_pp = pp / "config.yaml"
         with conf_pp.open() as f:
-            conf = yaml.safe_load(f)
+            yaml = YAML(typ="safe", pure=True)
+            conf = yaml.load(f)
 
         conf_type = conf.get("conf_type", "origin")
         if conf_type == "origin":

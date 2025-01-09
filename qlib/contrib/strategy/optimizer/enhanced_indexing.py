@@ -3,7 +3,6 @@
 
 import numpy as np
 import cvxpy as cp
-import pandas as pd
 
 from typing import Union, Optional, Dict, Any, List
 
@@ -126,7 +125,7 @@ class EnhancedIndexingOptimizer(BaseOptimizer):
 
         # objective
         ret = d @ r  # excess return
-        risk = cp.quad_form(v, cov_b) + var_u @ (d ** 2)  # tracking error
+        risk = cp.quad_form(v, cov_b) + var_u @ (d**2)  # tracking error
         obj = cp.Maximize(ret - self.lamb * risk)
 
         # weight bounds
@@ -156,7 +155,7 @@ class EnhancedIndexingOptimizer(BaseOptimizer):
 
         # factor deviation
         if self.f_dev is not None:
-            cons.extend([v >= -self.f_dev, v <= self.f_dev])
+            cons.extend([v >= -self.f_dev, v <= self.f_dev])  # pylint: disable=E1130
 
         # total turnover constraint
         t_cons = []

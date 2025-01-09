@@ -1,6 +1,9 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+# pylint: skip-file
+# flake8: noqa
+
 import logging
 
 from ...log import get_module_logger

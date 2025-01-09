@@ -2,15 +2,14 @@
 # Licensed under the MIT License.
 from __future__ import annotations
 import pandas as pd
-from typing import Union, List
+from typing import Union, List, TYPE_CHECKING
 from qlib.utils import init_instance_by_config
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from qlib.data.dataset import DataHandler
 
 
-def get_level_index(df: pd.DataFrame, level=Union[str, int]) -> int:
+def get_level_index(df: pd.DataFrame, level: Union[str, int]) -> int:
     """
 
     get the level index of `df` given `level`
@@ -41,12 +40,15 @@ def get_level_index(df: pd.DataFrame, level=Union[str, int]) -> int:
 
 def fetch_df_by_index(
     df: pd.DataFrame,
-    selector: Union[pd.Timestamp, slice, str, list],
+    selector: Union[pd.Timestamp, slice, str, list, pd.Index],
     level: Union[str, int],
     fetch_orig=True,
 ) -> pd.DataFrame:
     """
     fetch data from `data` with `selector` and `level`
+
+    selector are assumed to be well processed.
+    `fetch_df_by_index` is only responsible for get the right level
 
     Parameters
     ----------
@@ -60,7 +62,7 @@ def fetch_df_by_index(
     Data of the given index.
     """
     # level = None -> use selector directly
-    if level == None:
+    if level is None or isinstance(selector, pd.MultiIndex):
         return df.loc(axis=0)[selector]
     # Try to get the right index
     idx_slc = (selector, slice(None, None))
@@ -69,19 +71,15 @@ def fetch_df_by_index(
     if fetch_orig:
         for slc in idx_slc:
             if slc != slice(None, None):
-                return df.loc[
-                    pd.IndexSlice[idx_slc],
-                ]
-        else:
+                return df.loc[pd.IndexSlice[idx_slc],]  # noqa: E231
+        else:  # pylint: disable=W0120
             return df
     else:
-        return df.loc[
-            pd.IndexSlice[idx_slc],
-        ]
+        return df.loc[pd.IndexSlice[idx_slc],]  # noqa: E231
 
 
 def fetch_df_by_col(df: pd.DataFrame, col_set: Union[str, List[str]]) -> pd.DataFrame:
-    from .handler import DataHandler
+    from .handler import DataHandler  # pylint: disable=C0415
 
     if not isinstance(df.columns, pd.MultiIndex) or col_set == DataHandler.CS_RAW:
         return df
@@ -118,7 +116,7 @@ def convert_index_format(df: Union[pd.DataFrame, pd.Series], level: str = "datet
     return df
 
 
-def init_task_handler(task: dict) -> Union[DataHandler, None]:
+def init_task_handler(task: dict) -> DataHandler:
     """
     initialize the handler part of the task **inplace**
 
@@ -133,11 +131,12 @@ def init_task_handler(task: dict) -> Union[DataHandler, None]:
         returns
     """
     # avoid recursive import
-    from .handler import DataHandler
+    from .handler import DataHandler  # pylint: disable=C0415
 
     h_conf = task["dataset"]["kwargs"].get("handler")
     if h_conf is not None:
         handler = init_instance_by_config(h_conf, accept_types=DataHandler)
         task["dataset"]["kwargs"]["handler"] = handler
-
         return handler
+    else:
+        raise ValueError("The task does not contains a handler part.")

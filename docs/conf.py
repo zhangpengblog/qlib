@@ -54,9 +54,9 @@ master_doc = "index"
 
 
 # General information about the project.
-project = u"QLib"
-copyright = u"Microsoft"
-author = u"Microsoft"
+project = "QLib"
+copyright = "Microsoft"
+author = "Microsoft"
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
@@ -77,7 +77,7 @@ language = "en_US"
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This patterns also effect to html_static_path and html_extra_path
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "hidden"]
 
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = "sphinx"
@@ -123,7 +123,6 @@ html_logo = "_static/img/logo/1.png"
 html_theme_options = {
     "logo_only": True,
     "collapse_navigation": False,
-    "display_version": False,
     "navigation_depth": 4,
 }
 
@@ -174,7 +173,7 @@ latex_elements = {
 # (source start file, target name, title,
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
-    (master_doc, "qlib.tex", u"QLib Documentation", u"Microsoft", "manual"),
+    (master_doc, "qlib.tex", "QLib Documentation", "Microsoft", "manual"),
 ]
 
 
@@ -182,7 +181,7 @@ latex_documents = [
 
 # One entry per manual page. List of tuples
 # (source start file, name, description, authors, manual section).
-man_pages = [(master_doc, "qlib", u"QLib Documentation", [author], 1)]
+man_pages = [(master_doc, "qlib", "QLib Documentation", [author], 1)]
 
 
 # -- Options for Texinfo output -------------------------------------------
@@ -194,7 +193,7 @@ texinfo_documents = [
     (
         master_doc,
         "QLib",
-        u"QLib Documentation",
+        "QLib Documentation",
         author,
         "QLib",
         "One line description of project.",

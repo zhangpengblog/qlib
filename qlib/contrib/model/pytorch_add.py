@@ -20,7 +20,6 @@ from qlib.contrib.model.pytorch_lstm import LSTMModel
 from qlib.contrib.model.pytorch_utils import count_parameters
 from qlib.data.dataset import DatasetH
 from qlib.data.dataset.handler import DataHandlerLP
-from qlib.data.dataset.processor import CSRankNorm
 from qlib.log import get_module_logger
 from qlib.model.base import Model
 from qlib.utils import get_or_create_path
@@ -37,7 +36,7 @@ class ADD(Model):
      d_feat : int
          input dimensions for each time step
      metric : str
-         the evaluate metric used in early stop
+         the evaluation metric used in early stop
      optimizer : str
          optimizer name
      GPU : int
@@ -64,7 +63,7 @@ class ADD(Model):
         mu=0.05,
         GPU=0,
         seed=None,
-        **kwargs
+        **kwargs,
     ):
         # Set logger.
         self.logger = get_module_logger("ADD")

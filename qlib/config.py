@@ -19,10 +19,10 @@ import logging
 import platform
 import multiprocessing
 from pathlib import Path
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 from typing import TYPE_CHECKING
 
-from qlib.constant import REG_CN, REG_US
+from qlib.constant import REG_CN, REG_US, REG_TW
 
 if TYPE_CHECKING:
     from qlib.utils.time import Freq
@@ -40,7 +40,7 @@ class Config:
         if attr in self.__dict__["_config"]:
             return self.__dict__["_config"][attr]
 
-        raise AttributeError(f"No such {attr} in self._config")
+        raise AttributeError(f"No such `{attr}` in self._config")
 
     def get(self, key, default=None):
         return self.__dict__["_config"].get(key, default)
@@ -75,6 +75,18 @@ class Config:
     def set_conf_from_C(self, config_c):
         self.update(**config_c.__dict__["_config"])
 
+    @staticmethod
+    def register_from_C(config, skip_register=True):
+        from .utils import set_log_with_config  # pylint: disable=C0415
+
+        if C.registered and skip_register:
+            return
+
+        C.set_conf_from_C(config)
+        if C.logging_config:
+            set_log_with_config(C.logging_config)
+        C.register()
+
 
 # pickle.dump protocol version: https://docs.python.org/3/library/pickle.html#data-stream-format
 PROTOCOL_VERSION = 4
@@ -92,6 +104,7 @@ _default_config = {
     "calendar_provider": "LocalCalendarProvider",
     "instrument_provider": "LocalInstrumentProvider",
     "feature_provider": "LocalFeatureProvider",
+    "pit_provider": "LocalPITProvider",
     "expression_provider": "LocalExpressionProvider",
     "dataset_provider": "LocalDatasetProvider",
     "provider": "LocalProvider",
@@ -101,17 +114,18 @@ _default_config = {
     #   "~/.qlib/stock_data/cn_data"
     #   # dict
     #   {"day": "~/.qlib/stock_data/cn_data", "1min": "~/.qlib/stock_data/cn_data_1min"}
-    # NOTE: provider_uri priority：
+    # NOTE: provider_uri priority:
     #   1. backend_config: backend_obj["kwargs"]["provider_uri"]
     #   2. backend_config: backend_obj["kwargs"]["provider_uri_map"]
     #   3. qlib.init: provider_uri
     "provider_uri": "",
     # cache
     "expression_cache": None,
-    "dataset_cache": None,
     "calendar_cache": None,
     # for simple dataset cache
     "local_cache_path": None,
+    # kernels can be a fixed value or a callable function lie `def (freq: str) -> int`
+    # If the kernels are arctic_kernels, `min(NUM_USABLE_CPU, 30)` may be a good value
     "kernels": NUM_USABLE_CPU,
     # pickle.dump protocol version
     "dump_protocol_version": PROTOCOL_VERSION,
@@ -121,11 +135,10 @@ _default_config = {
     "joblib_backend": "multiprocessing",
     "default_disk_cache": 1,  # 0:skip/1:use
     "mem_cache_size_limit": 500,
+    "mem_cache_limit_type": "length",
     # memory cache expire second, only in used 'DatasetURICache' and 'client D.calendar'
     # default 1 hour
     "mem_cache_expire": 60 * 60,
-    # memory cache space limit, default 5GB, only in used client
-    "mem_cache_space_limit": 1024 * 1024 * 1024 * 5,
     # cache dir name
     "dataset_cache_dir_name": "dataset_cache",
     "features_cache_dir_name": "features_cache",
@@ -134,6 +147,7 @@ _default_config = {
     "redis_host": "127.0.0.1",
     "redis_port": 6379,
     "redis_task_db": 1,
+    "redis_password": None,
     # This value can be reset via qlib.init
     "logging_level": logging.INFO,
     # Global configuration of qlib log
@@ -159,7 +173,14 @@ _default_config = {
                 "filters": ["field_not_found"],
             }
         },
-        "loggers": {"qlib": {"level": logging.DEBUG, "handlers": ["console"]}},
+        # Normally this should be set to `False` to avoid duplicated logging [1].
+        # However, due to bug in pytest, it requires log message to propagate to root logger to be captured by `caplog` [2].
+        # [1] https://github.com/microsoft/qlib/pull/1661
+        # [2] https://github.com/pytest-dev/pytest/issues/3697
+        "loggers": {"qlib": {"level": logging.DEBUG, "handlers": ["console"], "propagate": False}},
+        # To let qlib work with other packages, we shouldn't disable existing loggers.
+        # Note that this param is default to True according to the documentation of logging.
+        "disable_existing_loggers": False,
     },
     # Default config for experiment manager
     "exp_manager": {
@@ -170,12 +191,24 @@ _default_config = {
             "default_exp_name": "Experiment",
         },
     },
+    "pit_record_type": {
+        "date": "I",  # uint32
+        "period": "I",  # uint32
+        "value": "d",  # float64
+        "index": "I",  # uint32
+    },
+    "pit_record_nan": {
+        "date": 0,
+        "period": 0,
+        "value": float("NAN"),
+        "index": 0xFFFFFFFF,
+    },
     # Default config for MongoDB
     "mongo": {
         "task_url": "mongodb://localhost:27017/",
         "task_db_name": "default_task_db",
     },
-    # Shift minute for highfreq minite data, used in backtest
+    # Shift minute for highfreq minute data, used in backtest
     # if min_data_shift == 0, use default market time [9:30, 11:29, 1:00, 2:59]
     # if min_data_shift != 0, use shifted market time [9:30, 11:29, 1:00, 2:59] - shift*minute
     "min_data_shift": 0,
@@ -183,20 +216,12 @@ _default_config = {
 
 MODE_CONF = {
     "server": {
-        # data provider config
-        "calendar_provider": "LocalCalendarProvider",
-        "instrument_provider": "LocalInstrumentProvider",
-        "feature_provider": "LocalFeatureProvider",
-        "expression_provider": "LocalExpressionProvider",
-        "dataset_provider": "LocalDatasetProvider",
-        "provider": "LocalProvider",
         # config it in qlib.init()
         "provider_uri": "",
         # redis
         "redis_host": "127.0.0.1",
         "redis_port": 6379,
         "redis_task_db": 1,
-        "kernels": NUM_USABLE_CPU,
         # cache
         "expression_cache": DISK_EXPRESSION_CACHE,
         "dataset_cache": DISK_DATASET_CACHE,
@@ -204,24 +229,15 @@ MODE_CONF = {
         "mount_path": None,
     },
     "client": {
-        # data provider config
-        "calendar_provider": "LocalCalendarProvider",
-        "instrument_provider": "LocalInstrumentProvider",
-        "feature_provider": "LocalFeatureProvider",
-        "expression_provider": "LocalExpressionProvider",
-        "dataset_provider": "LocalDatasetProvider",
-        "provider": "LocalProvider",
         # config it in user's own code
         "provider_uri": "~/.qlib/qlib_data/cn_data",
         # cache
         # Using parameter 'remote' to announce the client is using server_cache, and the writing access will be disabled.
-        "expression_cache": DISK_EXPRESSION_CACHE,
-        "dataset_cache": DISK_DATASET_CACHE,
+        # Disable cache by default. Avoid introduce advanced features for beginners
+        "dataset_cache": None,
         # SimpleDatasetCache directory
         "local_cache_path": Path("~/.cache/qlib_simple_cache").expanduser().resolve(),
-        "calendar_cache": None,
         # client config
-        "kernels": NUM_USABLE_CPU,
         "mount_path": None,
         "auto_mount": False,  # The nfs is already mounted on our server[auto_mount: False].
         # The nfs should be auto-mounted by qlib on other
@@ -255,6 +271,11 @@ _default_region_config = {
         "limit_threshold": None,
         "deal_price": "close",
     },
+    REG_TW: {
+        "trade_unit": 1000,
+        "limit_threshold": 0.1,
+        "deal_price": "close",
+    },
 }
 
 
@@ -276,7 +297,6 @@ class QlibConfig(Config):
         """
 
         def __init__(self, provider_uri: Union[str, Path, dict], mount_path: Union[str, Path, dict]):
-
             """
             The relation of `provider_uri` and `mount_path`
             - `mount_path` is used only if provider_uri is an NFS path
@@ -386,20 +406,17 @@ class QlibConfig(Config):
         default_conf : str
             the default config template chosen by user: "server", "client"
         """
-        from .utils import set_log_with_config, get_module_logger, can_use_cache
+        from .utils import set_log_with_config, get_module_logger, can_use_cache  # pylint: disable=C0415
 
         self.reset()
 
-        _logging_config = self.logging_config
-        if "logging_config" in kwargs:
-            _logging_config = kwargs["logging_config"]
+        _logging_config = kwargs.get("logging_config", self.logging_config)
 
         # set global config
         if _logging_config:
             set_log_with_config(_logging_config)
 
-        # FIXME: this logger ignored the level in config
-        logger = get_module_logger("Initialization", level=logging.INFO)
+        logger = get_module_logger("Initialization", kwargs.get("logging_level", self.logging_level))
         logger.info(f"default_conf: {default_conf}.")
 
         self.set_mode(default_conf)
@@ -431,11 +448,11 @@ class QlibConfig(Config):
                     )
 
     def register(self):
-        from .utils import init_instance_by_config
-        from .data.ops import register_all_ops
-        from .data.data import register_all_wrappers
-        from .workflow import R, QlibRecorder
-        from .workflow.utils import experiment_exit_handler
+        from .utils import init_instance_by_config  # pylint: disable=C0415
+        from .data.ops import register_all_ops  # pylint: disable=C0415
+        from .data.data import register_all_wrappers  # pylint: disable=C0415
+        from .workflow import R, QlibRecorder  # pylint: disable=C0415
+        from .workflow.utils import experiment_exit_handler  # pylint: disable=C0415
 
         register_all_ops(self)
         register_all_wrappers(self)
@@ -452,7 +469,7 @@ class QlibConfig(Config):
         self._registered = True
 
     def reset_qlib_version(self):
-        import qlib
+        import qlib  # pylint: disable=C0415
 
         reset_version = self.get("qlib_reset_version", None)
         if reset_version is not None:
@@ -461,6 +478,12 @@ class QlibConfig(Config):
             qlib.__version__ = getattr(qlib, "__version__bak")
             # Due to a bug? that converting __version__ to _QlibConfig__version__bak
             # Using  __version__bak instead of __version__
+
+    def get_kernels(self, freq: str):
+        """get number of processors given frequency"""
+        if isinstance(self["kernels"], Callable):
+            return self["kernels"](freq)
+        return self["kernels"]
 
     @property
     def registered(self):

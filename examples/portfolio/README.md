@@ -20,10 +20,11 @@ We use China stock market data for our example.
 1. Prepare CSI300 weight:
 
    ```bash
-   wget http://fintech.msra.cn/stock_data/downloads/csi300_weight.zip
+   wget https://github.com/SunsetWolf/qlib_dataset/releases/download/v0/csi300_weight.zip
    unzip -d ~/.qlib/qlib_data/cn_data csi300_weight.zip
    rm -f csi300_weight.zip
    ```
+   NOTE:  We don't find any public free resource to get the weight in the benchmark. To run the example, we manually create this weight data.
 
 2. Prepare risk model data:
 

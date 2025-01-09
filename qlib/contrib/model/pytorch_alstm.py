@@ -5,7 +5,6 @@
 from __future__ import division
 from __future__ import print_function
 
-import os
 import numpy as np
 import pandas as pd
 from typing import Text, Union
@@ -31,7 +30,7 @@ class ALSTM(Model):
     d_feat : int
         input dimension for each time step
     metric: str
-        the evaluate metric used in early stop
+        the evaluation metric used in early stop
     optimizer : str
         optimizer name
     GPU : int
@@ -53,7 +52,7 @@ class ALSTM(Model):
         optimizer="adam",
         GPU=0,
         seed=None,
-        **kwargs
+        **kwargs,
     ):
         # Set logger.
         self.logger = get_module_logger("ALSTM")
@@ -147,16 +146,14 @@ class ALSTM(Model):
         raise ValueError("unknown loss `%s`" % self.loss)
 
     def metric_fn(self, pred, label):
-
         mask = torch.isfinite(label)
 
-        if self.metric == "" or self.metric == "loss":
+        if self.metric in ("", "loss"):
             return -self.loss_fn(pred[mask], label[mask])
 
         raise ValueError("unknown metric `%s`" % self.metric)
 
     def train_epoch(self, x_train, y_train):
-
         x_train_values = x_train.values
         y_train_values = np.squeeze(y_train.values)
 
@@ -166,7 +163,6 @@ class ALSTM(Model):
         np.random.shuffle(indices)
 
         for i in range(len(indices))[:: self.batch_size]:
-
             if len(indices) - i < self.batch_size:
                 break
 
@@ -182,7 +178,6 @@ class ALSTM(Model):
             self.train_optimizer.step()
 
     def test_epoch(self, data_x, data_y):
-
         # prepare training data
         x_values = data_x.values
         y_values = np.squeeze(data_y.values)
@@ -195,7 +190,6 @@ class ALSTM(Model):
         indices = np.arange(len(x_values))
 
         for i in range(len(indices))[:: self.batch_size]:
-
             if len(indices) - i < self.batch_size:
                 break
 
@@ -218,7 +212,6 @@ class ALSTM(Model):
         evals_result=dict(),
         save_path=None,
     ):
-
         df_train, df_valid, df_test = dataset.prepare(
             ["train", "valid", "test"],
             col_set=["feature", "label"],
@@ -283,7 +276,6 @@ class ALSTM(Model):
         preds = []
 
         for begin in range(sample_num)[:: self.batch_size]:
-
             if sample_num - begin < self.batch_size:
                 end = sample_num
             else:
@@ -312,8 +304,8 @@ class ALSTMModel(nn.Module):
     def _build_model(self):
         try:
             klass = getattr(nn, self.rnn_type.upper())
-        except:
-            raise ValueError("unknown rnn_type `%s`" % self.rnn_type)
+        except Exception as e:
+            raise ValueError("unknown rnn_type `%s`" % self.rnn_type) from e
         self.net = nn.Sequential()
         self.net.add_module("fc_in", nn.Linear(in_features=self.input_size, out_features=self.hid_size))
         self.net.add_module("act", nn.Tanh())

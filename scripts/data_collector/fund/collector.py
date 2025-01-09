@@ -107,7 +107,7 @@ class FundCollector(BaseCollector):
             url = INDEX_BENCH_URL.format(
                 index_code=symbol, numberOfHistoricalDaysToCrawl=10000, startDate=start, endDate=end
             )
-            resp = requests.get(url, headers={"referer": "http://fund.eastmoney.com/110022.html"})
+            resp = requests.get(url, headers={"referer": "http://fund.eastmoney.com/110022.html"}, timeout=None)
 
             if resp.status_code != 200:
                 raise ValueError("request error")
@@ -116,8 +116,8 @@ class FundCollector(BaseCollector):
 
             # Some funds don't show the net value, example: http://fundf10.eastmoney.com/jjjz_010288.html
             SYType = data["Data"]["SYType"]
-            if (SYType == "每万份收益") or (SYType == "每百份收益") or (SYType == "每百万份收益"):
-                raise Exception("The fund contains 每*份收益")
+            if SYType in {"每万份收益", "每百份收益", "每百万份收益"}:
+                raise ValueError("The fund contains 每*份收益")
 
             # TODO: should we sort the value by datetime?
             _resp = pd.DataFrame(data["Data"]["LSJZList"])
@@ -253,7 +253,6 @@ class Run(BaseRun):
         delay=0,
         start=None,
         end=None,
-        interval="1d",
         check_data_length: int = None,
         limit_nums=None,
     ):
@@ -282,7 +281,7 @@ class Run(BaseRun):
             $ python collector.py download_data --source_dir ~/.qlib/fund_data/source/cn_data --region CN --start 2020-11-01 --end 2020-11-10 --delay 0.1 --interval 1d
         """
 
-        super(Run, self).download_data(max_collector_count, delay, start, end, interval, check_data_length, limit_nums)
+        super(Run, self).download_data(max_collector_count, delay, start, end, check_data_length, limit_nums)
 
     def normalize_data(self, date_field_name: str = "date", symbol_field_name: str = "symbol"):
         """normalize data

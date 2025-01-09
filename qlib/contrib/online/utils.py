@@ -1,10 +1,13 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+# pylint: skip-file
+# flake8: noqa
+
 import pathlib
 import pickle
-import yaml
 import pandas as pd
+from ruamel.yaml import YAML
 from ...data import D
 from ...config import C
 from ...log import get_module_logger
@@ -88,7 +91,8 @@ def prepare(um, today, user_id, exchange_config=None):
     dates.append(get_next_trading_date(dates[-1], future=True))
     if exchange_config:
         with pathlib.Path(exchange_config).open("r") as fp:
-            exchange_paras = yaml.safe_load(fp)
+            yaml = YAML(typ="safe", pure=True)
+            exchange_paras = yaml.load(fp)
     else:
         exchange_paras = {}
     trade_exchange = Exchange(trade_dates=dates, **exchange_paras)

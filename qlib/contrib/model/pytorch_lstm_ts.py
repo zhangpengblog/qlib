@@ -5,7 +5,6 @@
 from __future__ import division
 from __future__ import print_function
 
-import os
 import numpy as np
 import pandas as pd
 import copy
@@ -18,7 +17,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from ...model.base import Model
-from ...data.dataset import DatasetH, TSDatasetH
 from ...data.dataset.handler import DataHandlerLP
 from ...model.utils import ConcatDataset
 from ...data.dataset.weight import Reweighter
@@ -32,7 +30,7 @@ class LSTM(Model):
     d_feat : int
         input dimension for each time step
     metric: str
-        the evaluate metric used in early stop
+        the evaluation metric used in early stop
     optimizer : str
         optimizer name
     GPU : str
@@ -55,7 +53,7 @@ class LSTM(Model):
         n_jobs=10,
         GPU=0,
         seed=None,
-        **kwargs
+        **kwargs,
     ):
         # Set logger.
         self.logger = get_module_logger("LSTM")
@@ -140,7 +138,7 @@ class LSTM(Model):
         loss = weight * (pred - label) ** 2
         return torch.mean(loss)
 
-    def loss_fn(self, pred, label):
+    def loss_fn(self, pred, label, weight):
         mask = ~torch.isnan(label)
 
         if weight is None:
@@ -152,19 +150,17 @@ class LSTM(Model):
         raise ValueError("unknown loss `%s`" % self.loss)
 
     def metric_fn(self, pred, label):
-
         mask = torch.isfinite(label)
 
-        if self.metric == "" or self.metric == "loss":
-            return -self.loss_fn(pred[mask], label[mask])
+        if self.metric in ("", "loss"):
+            return -self.loss_fn(pred[mask], label[mask], weight=None)
 
         raise ValueError("unknown metric `%s`" % self.metric)
 
     def train_epoch(self, data_loader):
-
         self.LSTM_model.train()
 
-        for (data, weight) in data_loader:
+        for data, weight in data_loader:
             feature = data[:, :, 0:-1].to(self.device)
             label = data[:, -1, -1].to(self.device)
 
@@ -177,14 +173,12 @@ class LSTM(Model):
             self.train_optimizer.step()
 
     def test_epoch(self, data_loader):
-
         self.LSTM_model.eval()
 
         scores = []
         losses = []
 
-        for (data, weight) in data_loader:
-
+        for data, weight in data_loader:
             feature = data[:, :, 0:-1].to(self.device)
             # feature[torch.isnan(feature)] = 0
             label = data[:, -1, -1].to(self.device)
@@ -290,7 +284,6 @@ class LSTM(Model):
         preds = []
 
         for data in test_loader:
-
             feature = data[:, :, 0:-1].to(self.device)
 
             with torch.no_grad():

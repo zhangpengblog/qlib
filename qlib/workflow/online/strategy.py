@@ -5,9 +5,7 @@
 OnlineStrategy module is an element of online serving.
 """
 
-from copy import deepcopy
-from typing import List, Tuple, Union
-from qlib.data.data import D
+from typing import List, Union
 from qlib.log import get_module_logger
 from qlib.model.ens.group import RollingGroup
 from qlib.utils import transform_end_date
@@ -26,11 +24,11 @@ class OnlineStrategy:
     def __init__(self, name_id: str):
         """
         Init OnlineStrategy.
-        This module **MUST** use `Trainer <../reference/api.html#Trainer>`_ to finishing model training.
+        This module **MUST** use `Trainer <../reference/api.html#qlib.model.trainer.Trainer>`_ to finishing model training.
 
         Args:
             name_id (str): a unique name or id.
-            trainer (Trainer, optional): a instance of Trainer. Defaults to None.
+            trainer (qlib.model.trainer.Trainer, optional): a instance of Trainer. Defaults to None.
         """
         self.name_id = name_id
         self.logger = get_module_logger(self.__class__.__name__)
@@ -92,7 +90,6 @@ class OnlineStrategy:
 
 
 class RollingStrategy(OnlineStrategy):
-
     """
     This example strategy always uses the latest rolling model sas online models.
     """

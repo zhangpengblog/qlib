@@ -5,7 +5,6 @@
 from __future__ import division
 from __future__ import print_function
 
-import os
 import numpy as np
 import pandas as pd
 from typing import Text, Union
@@ -20,7 +19,7 @@ from torch.utils.data import DataLoader
 
 from .pytorch_utils import count_parameters
 from ...model.base import Model
-from ...data.dataset import DatasetH, TSDatasetH
+from ...data.dataset import DatasetH
 from ...data.dataset.handler import DataHandlerLP
 from ...model.utils import ConcatDataset
 from ...data.dataset.weight import Reweighter
@@ -34,7 +33,7 @@ class ALSTM(Model):
     d_feat : int
         input dimension for each time step
     metric: str
-        the evaluate metric used in early stop
+        the evaluation metric used in early stop
     optimizer : str
         optimizer name
     GPU : int
@@ -57,7 +56,7 @@ class ALSTM(Model):
         n_jobs=10,
         GPU=0,
         seed=None,
-        **kwargs
+        **kwargs,
     ):
         # Set logger.
         self.logger = get_module_logger("ALSTM")
@@ -157,19 +156,21 @@ class ALSTM(Model):
         raise ValueError("unknown loss `%s`" % self.loss)
 
     def metric_fn(self, pred, label):
-
         mask = torch.isfinite(label)
 
-        if self.metric == "" or self.metric == "loss":
+        if self.metric in ("", "loss"):
             return -self.loss_fn(pred[mask], label[mask])
+        elif self.metric == "mse":
+            mask = ~torch.isnan(label)
+            weight = torch.ones_like(label)
+            return -self.mse(pred[mask], label[mask], weight[mask])
 
         raise ValueError("unknown metric `%s`" % self.metric)
 
     def train_epoch(self, data_loader):
-
         self.ALSTM_model.train()
 
-        for (data, weight) in data_loader:
+        for data, weight in data_loader:
             feature = data[:, :, 0:-1].to(self.device)
             label = data[:, -1, -1].to(self.device)
 
@@ -182,14 +183,12 @@ class ALSTM(Model):
             self.train_optimizer.step()
 
     def test_epoch(self, data_loader):
-
         self.ALSTM_model.eval()
 
         scores = []
         losses = []
 
-        for (data, weight) in data_loader:
-
+        for data, weight in data_loader:
             feature = data[:, :, 0:-1].to(self.device)
             # feature[torch.isnan(feature)] = 0
             label = data[:, -1, -1].to(self.device)
@@ -296,7 +295,6 @@ class ALSTM(Model):
         preds = []
 
         for data in test_loader:
-
             feature = data[:, :, 0:-1].to(self.device)
 
             with torch.no_grad():
@@ -320,8 +318,8 @@ class ALSTMModel(nn.Module):
     def _build_model(self):
         try:
             klass = getattr(nn, self.rnn_type.upper())
-        except:
-            raise ValueError("unknown rnn_type `%s`" % self.rnn_type)
+        except Exception as e:
+            raise ValueError("unknown rnn_type `%s`" % self.rnn_type) from e
         self.net = nn.Sequential()
         self.net.add_module("fc_in", nn.Linear(in_features=self.input_size, out_features=self.hid_size))
         self.net.add_module("act", nn.Tanh())

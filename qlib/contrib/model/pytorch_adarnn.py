@@ -1,12 +1,10 @@
 # Copyright (c) Microsoft Corporation.
 import os
-from pdb import set_trace
 from torch.utils.data import Dataset, DataLoader
 
 import copy
 from typing import Text, Union
 
-import math
 import numpy as np
 import pandas as pd
 import torch
@@ -30,7 +28,7 @@ class ADARNN(Model):
     d_feat : int
         input dimension for each time step
     metric: str
-        the evaluate metric used in early stop
+        the evaluation metric used in early stop
     optimizer : str
         optimizer name
     GPU : str
@@ -58,7 +56,7 @@ class ADARNN(Model):
         n_splits=2,
         GPU=0,
         seed=None,
-        **kwargs
+        **_,
     ):
         # Set logger.
         self.logger = get_module_logger("ADARNN")
@@ -83,7 +81,7 @@ class ADARNN(Model):
         self.optimizer = optimizer.lower()
         self.loss = loss
         self.n_splits = n_splits
-        self.device = torch.device("cuda:%d" % (GPU) if torch.cuda.is_available() and GPU >= 0 else "cpu")
+        self.device = torch.device("cuda:%d" % GPU if torch.cuda.is_available() and GPU >= 0 else "cpu")
         self.seed = seed
 
         self.logger.info(
@@ -146,7 +144,7 @@ class ADARNN(Model):
             raise NotImplementedError("optimizer {} is not supported!".format(optimizer))
 
         self.fitted = False
-        self.model.cuda()
+        self.model.to(self.device)
 
     @property
     def use_gpu(self):
@@ -155,11 +153,8 @@ class ADARNN(Model):
     def train_AdaRNN(self, train_loader_list, epoch, dist_old=None, weight_mat=None):
         self.model.train()
         criterion = nn.MSELoss()
-        dist_mat = torch.zeros(self.num_layers, self.len_seq).cuda()
-        len_loader = np.inf
-        for loader in train_loader_list:
-            if len(loader) < len_loader:
-                len_loader = len(loader)
+        dist_mat = torch.zeros(self.num_layers, self.len_seq).to(self.device)
+        out_weight_list = None
         for data_all in zip(*train_loader_list):
             #  for data_all in zip(*train_loader_list):
             self.train_optimizer.zero_grad()
@@ -167,7 +162,7 @@ class ADARNN(Model):
             list_label = []
             for data in data_all:
                 # feature :[36, 24, 6]
-                feature, label_reg = data[0].cuda().float(), data[1].cuda().float()
+                feature, label_reg = data[0].to(self.device).float(), data[1].to(self.device).float()
                 list_feat.append(feature)
                 list_label.append(label_reg)
             flag = False
@@ -181,12 +176,12 @@ class ADARNN(Model):
             if flag:
                 continue
 
-            total_loss = torch.zeros(1).cuda()
-            for i in range(len(index)):
-                feature_s = list_feat[index[i][0]]
-                feature_t = list_feat[index[i][1]]
-                label_reg_s = list_label[index[i][0]]
-                label_reg_t = list_label[index[i][1]]
+            total_loss = torch.zeros(1).to(self.device)
+            for i, n in enumerate(index):
+                feature_s = list_feat[n[0]]
+                feature_t = list_feat[n[1]]
+                label_reg_s = list_label[n[0]]
+                label_reg_t = list_label[n[1]]
                 feature_all = torch.cat((feature_s, feature_t), 0)
 
                 if epoch < self.pre_epoch:
@@ -215,7 +210,8 @@ class ADARNN(Model):
             weight_mat = self.transform_type(out_weight_list)
             return weight_mat, None
 
-    def calc_all_metrics(self, pred):
+    @staticmethod
+    def calc_all_metrics(pred):
         """pred is a pandas dataframe that has two attributes: score (pred) and label (real)"""
         res = {}
         ic = pred.groupby(level="datetime").apply(lambda x: x.label.corr(x.score))
@@ -247,7 +243,6 @@ class ADARNN(Model):
         evals_result=dict(),
         save_path=None,
     ):
-
         df_train, df_valid = dataset.prepare(
             ["train", "valid"],
             col_set=["feature", "label"],
@@ -261,8 +256,6 @@ class ADARNN(Model):
 
         save_path = get_or_create_path(save_path)
         stop_steps = 0
-        best_score = -np.inf
-        best_epoch = 0
         evals_result["train"] = []
         evals_result["valid"] = []
 
@@ -321,13 +314,12 @@ class ADARNN(Model):
         preds = []
 
         for begin in range(sample_num)[:: self.batch_size]:
-
             if sample_num - begin < self.batch_size:
                 end = sample_num
             else:
                 end = begin + self.batch_size
 
-            x_batch = torch.from_numpy(x_values[begin:end]).float().cuda()
+            x_batch = torch.from_numpy(x_values[begin:end]).float().to(self.device)
 
             with torch.no_grad():
                 pred = self.model.predict(x_batch).detach().cpu().numpy()
@@ -337,7 +329,7 @@ class ADARNN(Model):
         return pd.Series(np.concatenate(preds), index=index)
 
     def transform_type(self, init_weight):
-        weight = torch.ones(self.num_layers, self.len_seq).cuda()
+        weight = torch.ones(self.num_layers, self.len_seq).to(self.device)
         for i in range(self.num_layers):
             for j in range(self.len_seq):
                 weight[i, j] = init_weight[i][j].item()
@@ -391,6 +383,7 @@ class AdaRNN(nn.Module):
         len_seq=9,
         model_type="AdaRNN",
         trans_loss="mmd",
+        GPU=0,
     ):
         super(AdaRNN, self).__init__()
         self.use_bottleneck = use_bottleneck
@@ -401,6 +394,7 @@ class AdaRNN(nn.Module):
         self.model_type = model_type
         self.trans_loss = trans_loss
         self.len_seq = len_seq
+        self.device = torch.device("cuda:%d" % GPU if torch.cuda.is_available() and GPU >= 0 else "cpu")
         in_size = self.n_input
 
         features = nn.ModuleList()
@@ -410,7 +404,7 @@ class AdaRNN(nn.Module):
             in_size = hidden
         self.features = nn.Sequential(*features)
 
-        if use_bottleneck == True:  # finance
+        if use_bottleneck is True:  # finance
             self.bottleneck = nn.Sequential(
                 nn.Linear(n_hiddens[-1], bottleneck_width),
                 nn.Linear(bottleneck_width, bottleneck_width),
@@ -449,7 +443,7 @@ class AdaRNN(nn.Module):
     def forward_pre_train(self, x, len_win=0):
         out = self.gru_features(x)
         fea = out[0]  # [2N,L,H]
-        if self.use_bottleneck == True:
+        if self.use_bottleneck is True:
             fea_bottleneck = self.bottleneck(fea[:, -1, :])
             fc_out = self.fc(fea_bottleneck).squeeze()
         else:
@@ -457,9 +451,9 @@ class AdaRNN(nn.Module):
 
         out_list_all, out_weight_list = out[1], out[2]
         out_list_s, out_list_t = self.get_features(out_list_all)
-        loss_transfer = torch.zeros((1,)).cuda()
-        for i in range(len(out_list_s)):
-            criterion_transder = TransferLoss(loss_type=self.trans_loss, input_dim=out_list_s[i].shape[2])
+        loss_transfer = torch.zeros((1,)).to(self.device)
+        for i, n in enumerate(out_list_s):
+            criterion_transder = TransferLoss(loss_type=self.trans_loss, input_dim=n.shape[2])
             h_start = 0
             for j in range(h_start, self.len_seq, 1):
                 i_start = j - len_win if j - len_win >= 0 else 0
@@ -471,7 +465,7 @@ class AdaRNN(nn.Module):
                         else 1 / (self.len_seq - h_start) * (2 * len_win + 1)
                     )
                     loss_transfer = loss_transfer + weight * criterion_transder.compute(
-                        out_list_s[i][:, j, :], out_list_t[i][:, k, :]
+                        n[:, j, :], out_list_t[i][:, k, :]
                     )
         return fc_out, loss_transfer, out_weight_list
 
@@ -484,7 +478,7 @@ class AdaRNN(nn.Module):
             out, _ = self.features[i](x_input.float())
             x_input = out
             out_lis.append(out)
-            if self.model_type == "AdaRNN" and predict == False:
+            if self.model_type == "AdaRNN" and predict is False:
                 out_gate = self.process_gate_weight(x_input, i)
                 out_weight_list.append(out_gate)
         return out, out_lis, out_weight_list
@@ -499,7 +493,8 @@ class AdaRNN(nn.Module):
         res = self.softmax(weight).squeeze()
         return res
 
-    def get_features(self, output_list):
+    @staticmethod
+    def get_features(output_list):
         fea_list_src, fea_list_tar = [], []
         for fea in output_list:
             fea_list_src.append(fea[0 : fea.size(0) // 2])
@@ -518,16 +513,16 @@ class AdaRNN(nn.Module):
 
         out_list_all = out[1]
         out_list_s, out_list_t = self.get_features(out_list_all)
-        loss_transfer = torch.zeros((1,)).cuda()
+        loss_transfer = torch.zeros((1,)).to(self.device)
         if weight_mat is None:
-            weight = (1.0 / self.len_seq * torch.ones(self.num_layers, self.len_seq)).cuda()
+            weight = (1.0 / self.len_seq * torch.ones(self.num_layers, self.len_seq)).to(self.device)
         else:
             weight = weight_mat
-        dist_mat = torch.zeros(self.num_layers, self.len_seq).cuda()
-        for i in range(len(out_list_s)):
-            criterion_transder = TransferLoss(loss_type=self.trans_loss, input_dim=out_list_s[i].shape[2])
+        dist_mat = torch.zeros(self.num_layers, self.len_seq).to(self.device)
+        for i, n in enumerate(out_list_s):
+            criterion_transder = TransferLoss(loss_type=self.trans_loss, input_dim=n.shape[2])
             for j in range(self.len_seq):
-                loss_trans = criterion_transder.compute(out_list_s[i][:, j, :], out_list_t[i][:, j, :])
+                loss_trans = criterion_transder.compute(n[:, j, :], out_list_t[i][:, j, :])
                 loss_transfer = loss_transfer + weight[i, j] * loss_trans
                 dist_mat[i, j] = loss_trans
         return fc_out, loss_transfer, dist_mat, weight
@@ -546,7 +541,7 @@ class AdaRNN(nn.Module):
     def predict(self, x):
         out = self.gru_features(x, predict=True)
         fea = out[0]
-        if self.use_bottleneck == True:
+        if self.use_bottleneck is True:
             fea_bottleneck = self.bottleneck(fea[:, -1, :])
             fc_out = self.fc(fea_bottleneck).squeeze()
         else:
@@ -555,12 +550,13 @@ class AdaRNN(nn.Module):
 
 
 class TransferLoss:
-    def __init__(self, loss_type="cosine", input_dim=512):
+    def __init__(self, loss_type="cosine", input_dim=512, GPU=0):
         """
         Supported loss_type: mmd(mmd_lin), mmd_rbf, coral, cosine, kl, js, mine, adv
         """
         self.loss_type = loss_type
         self.input_dim = input_dim
+        self.device = torch.device("cuda:%d" % GPU if torch.cuda.is_available() and GPU >= 0 else "cpu")
 
     def compute(self, X, Y):
         """Compute adaptation loss
@@ -572,22 +568,23 @@ class TransferLoss:
         Returns:
             [tensor] -- transfer loss
         """
-        if self.loss_type == "mmd_lin" or self.loss_type == "mmd":
+        loss = None
+        if self.loss_type in ("mmd_lin", "mmd"):
             mmdloss = MMD_loss(kernel_type="linear")
             loss = mmdloss(X, Y)
         elif self.loss_type == "coral":
-            loss = CORAL(X, Y)
-        elif self.loss_type == "cosine" or self.loss_type == "cos":
+            loss = CORAL(X, Y, self.device)
+        elif self.loss_type in ("cosine", "cos"):
             loss = 1 - cosine(X, Y)
         elif self.loss_type == "kl":
             loss = kl_div(X, Y)
         elif self.loss_type == "js":
             loss = js(X, Y)
         elif self.loss_type == "mine":
-            mine_model = Mine_estimator(input_dim=self.input_dim, hidden_dim=60).cuda()
+            mine_model = Mine_estimator(input_dim=self.input_dim, hidden_dim=60).to(self.device)
             loss = mine_model(X, Y)
         elif self.loss_type == "adv":
-            loss = adv(X, Y, input_dim=self.input_dim, hidden_dim=32)
+            loss = adv(X, Y, self.device, input_dim=self.input_dim, hidden_dim=32)
         elif self.loss_type == "mmd_rbf":
             mmdloss = MMD_loss(kernel_type="rbf")
             loss = mmdloss(X, Y)
@@ -632,12 +629,12 @@ class Discriminator(nn.Module):
         return x
 
 
-def adv(source, target, input_dim=256, hidden_dim=512):
+def adv(source, target, device, input_dim=256, hidden_dim=512):
     domain_loss = nn.BCELoss()
     # !!! Pay attention to .cuda !!!
-    adv_net = Discriminator(input_dim, hidden_dim).cuda()
-    domain_src = torch.ones(len(source)).cuda()
-    domain_tar = torch.zeros(len(target)).cuda()
+    adv_net = Discriminator(input_dim, hidden_dim).to(device)
+    domain_src = torch.ones(len(source)).to(device)
+    domain_tar = torch.zeros(len(target)).to(device)
     domain_src, domain_tar = domain_src.view(domain_src.shape[0], 1), domain_tar.view(domain_tar.shape[0], 1)
     reverse_src = ReverseLayerF.apply(source, 1)
     reverse_tar = ReverseLayerF.apply(target, 1)
@@ -648,16 +645,16 @@ def adv(source, target, input_dim=256, hidden_dim=512):
     return loss
 
 
-def CORAL(source, target):
+def CORAL(source, target, device):
     d = source.size(1)
     ns, nt = source.size(0), target.size(0)
 
     # source covariance
-    tmp_s = torch.ones((1, ns)).cuda() @ source
+    tmp_s = torch.ones((1, ns)).to(device) @ source
     cs = (source.t() @ source - (tmp_s.t() @ tmp_s) / ns) / (ns - 1)
 
     # target covariance
-    tmp_t = torch.ones((1, nt)).cuda() @ target
+    tmp_t = torch.ones((1, nt)).to(device) @ target
     ct = (target.t() @ target - (tmp_t.t() @ tmp_t) / nt) / (nt - 1)
 
     # frobenius norm
@@ -675,7 +672,8 @@ class MMD_loss(nn.Module):
         self.fix_sigma = None
         self.kernel_type = kernel_type
 
-    def guassian_kernel(self, source, target, kernel_mul=2.0, kernel_num=5, fix_sigma=None):
+    @staticmethod
+    def guassian_kernel(source, target, kernel_mul=2.0, kernel_num=5, fix_sigma=None):
         n_samples = int(source.size()[0]) + int(target.size()[0])
         total = torch.cat([source, target], dim=0)
         total0 = total.unsqueeze(0).expand(int(total.size(0)), int(total.size(0)), int(total.size(1)))
@@ -684,13 +682,14 @@ class MMD_loss(nn.Module):
         if fix_sigma:
             bandwidth = fix_sigma
         else:
-            bandwidth = torch.sum(L2_distance.data) / (n_samples ** 2 - n_samples)
+            bandwidth = torch.sum(L2_distance.data) / (n_samples**2 - n_samples)
         bandwidth /= kernel_mul ** (kernel_num // 2)
-        bandwidth_list = [bandwidth * (kernel_mul ** i) for i in range(kernel_num)]
+        bandwidth_list = [bandwidth * (kernel_mul**i) for i in range(kernel_num)]
         kernel_val = [torch.exp(-L2_distance / bandwidth_temp) for bandwidth_temp in bandwidth_list]
         return sum(kernel_val)
 
-    def linear_mmd(self, X, Y):
+    @staticmethod
+    def linear_mmd(X, Y):
         delta = X.mean(axis=0) - Y.mean(axis=0)
         loss = delta.dot(delta.T)
         return loss

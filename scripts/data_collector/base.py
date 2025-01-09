@@ -8,7 +8,7 @@ import datetime
 import importlib
 from pathlib import Path
 from typing import Type, Iterable
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 
 import pandas as pd
 from tqdm import tqdm
@@ -18,7 +18,6 @@ from qlib.utils import code_to_fname
 
 
 class BaseCollector(abc.ABC):
-
     CACHE_FLAG = "CACHED"
     NORMAL_FLAG = "NORMAL"
 
@@ -170,7 +169,7 @@ class BaseCollector(abc.ABC):
         df["symbol"] = symbol
         if instrument_path.exists():
             _old_df = pd.read_csv(instrument_path)
-            df = _old_df.append(df, sort=False)
+            df = pd.concat([_old_df, df], sort=False)
         df.to_csv(instrument_path, index=False)
 
     def cache_small_data(self, symbol, df):
@@ -185,7 +184,6 @@ class BaseCollector(abc.ABC):
             return self.NORMAL_FLAG
 
     def _collector(self, instrument_list):
-
         error_symbol = []
         res = Parallel(n_jobs=self.max_workers)(
             delayed(self._simple_collector)(_inst) for _inst in tqdm(instrument_list)
@@ -289,7 +287,21 @@ class Normalize:
 
     def _executor(self, file_path: Path):
         file_path = Path(file_path)
-        df = pd.read_csv(file_path)
+
+        # some symbol_field values such as TRUE, NA are decoded as True(bool), NaN(np.float) by pandas default csv parsing.
+        # manually defines dtype and na_values of the symbol_field.
+        default_na = pd._libs.parsers.STR_NA_VALUES  # pylint: disable=I1101
+        symbol_na = default_na.copy()
+        symbol_na.remove("NA")
+        columns = pd.read_csv(file_path, nrows=0).columns
+        df = pd.read_csv(
+            file_path,
+            dtype={self._symbol_field_name: str},
+            keep_default_na=False,
+            na_values={col: symbol_na if col == self._symbol_field_name else default_na for col in columns},
+        )
+
+        # NOTE: It has been reported that there may be some problems here, and the specific issues will be dealt with when they are identified.
         df = self._normalize_obj.normalize(df)
         if df is not None and not df.empty:
             if self._end_date is not None:
@@ -323,7 +335,7 @@ class BaseRun(abc.ABC):
             freq, value from [1min, 1d], default 1d
         """
         if source_dir is None:
-            source_dir = Path(self.default_base_dir).joinpath("_source")
+            source_dir = Path(self.default_base_dir).joinpath("source")
         self.source_dir = Path(source_dir).expanduser().resolve()
         self.source_dir.mkdir(parents=True, exist_ok=True)
 
@@ -339,17 +351,17 @@ class BaseRun(abc.ABC):
     @property
     @abc.abstractmethod
     def collector_class_name(self):
-        raise NotImplementedError("rewrite normalize_symbol")
+        raise NotImplementedError("rewrite collector_class_name")
 
     @property
     @abc.abstractmethod
     def normalize_class_name(self):
-        raise NotImplementedError("rewrite normalize_symbol")
+        raise NotImplementedError("rewrite normalize_class_name")
 
     @property
     @abc.abstractmethod
     def default_base_dir(self) -> [Path, str]:
-        raise NotImplementedError("rewrite normalize_symbol")
+        raise NotImplementedError("rewrite default_base_dir")
 
     def download_data(
         self,
@@ -357,9 +369,9 @@ class BaseRun(abc.ABC):
         delay=0,
         start=None,
         end=None,
-        interval="1d",
         check_data_length: int = None,
         limit_nums=None,
+        **kwargs,
     ):
         """download data from Internet
 
@@ -369,8 +381,6 @@ class BaseRun(abc.ABC):
             default 2
         delay: float
             time.sleep(delay), default 0
-        interval: str
-            freq, value from [1min, 1d], default 1d
         start: str
             start datetime, default "2000-01-01"
         end: str
@@ -396,9 +406,10 @@ class BaseRun(abc.ABC):
             delay=delay,
             start=start,
             end=end,
-            interval=interval,
+            interval=self.interval,
             check_data_length=check_data_length,
             limit_nums=limit_nums,
+            **kwargs,
         ).collector_data()
 
     def normalize_data(self, date_field_name: str = "date", symbol_field_name: str = "symbol", **kwargs):

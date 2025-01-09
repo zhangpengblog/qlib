@@ -6,8 +6,7 @@ import torch
 import numpy as np
 import pandas as pd
 
-from qlib.utils import init_instance_by_config
-from qlib.data.dataset import DatasetH, DataHandler
+from qlib.data.dataset import DatasetH
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -95,9 +94,8 @@ class MTSDatasetH(DatasetH):
         shuffle=True,
         pin_memory=False,
         drop_last=False,
-        **kwargs
+        **kwargs,
     ):
-
         assert horizon > 0, "please specify `horizon` to avoid data leakage"
 
         self.seq_len = seq_len
@@ -112,7 +110,6 @@ class MTSDatasetH(DatasetH):
         super().__init__(handler, segments, **kwargs)
 
     def setup_data(self, handler_kwargs: dict = None, **kwargs):
-
         super().setup_data()
 
         # change index to <code, date>
@@ -150,8 +147,15 @@ class MTSDatasetH(DatasetH):
 
     def _prepare_seg(self, slc, **kwargs):
         fn = _get_date_parse_fn(self._index[0][1])
-        start_date = fn(slc.start)
-        end_date = fn(slc.stop)
+
+        if isinstance(slc, slice):
+            start, stop = slc.start, slc.stop
+        elif isinstance(slc, (list, tuple)):
+            start, stop = slc
+        else:
+            raise NotImplementedError(f"This type of input is not supported")
+        start_date = fn(start)
+        end_date = fn(stop)
         obj = copy.copy(self)  # shallow copy
         # NOTE: Seriable will disable copy `self._data` so we manually assign them here
         obj._data = self._data

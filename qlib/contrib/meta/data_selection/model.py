@@ -1,28 +1,25 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-from qlib.log import get_module_logger
 import pandas as pd
 import numpy as np
-from qlib.model.meta.task import MetaTask
 import torch
 from torch import nn
 from torch import optim
 from tqdm.auto import tqdm
-import collections
 import copy
-from typing import Union, List, Tuple, Dict
+from typing import Union, List
 
-from ....data.dataset.weight import Reweighter
 from ....model.meta.dataset import MetaTaskDataset
-from ....model.meta.model import MetaModel, MetaTaskModel
+from ....model.meta.model import MetaTaskModel
 from ....workflow import R
-
 from .utils import ICLoss
 from .dataset import MetaDatasetDS
-from qlib.contrib.meta.data_selection.net import PredNet
-from qlib.data.dataset.weight import Reweighter
+
 from qlib.log import get_module_logger
+from qlib.model.meta.task import MetaTask
+from qlib.data.dataset.weight import Reweighter
+from qlib.contrib.meta.data_selection.net import PredNet
 
 logger = get_module_logger("data selection")
 
@@ -55,7 +52,13 @@ class MetaModelDS(MetaTaskModel):
         lr=0.0001,
         max_epoch=100,
         seed=43,
+        alpha=0.0,
+        loss_skip_thresh=50,
     ):
+        """
+        loss_skip_size: int
+            The number of threshold to skip the loss calculation for each day.
+        """
         self.step = step
         self.hist_step_n = hist_step_n
         self.clip_method = clip_method
@@ -64,6 +67,8 @@ class MetaModelDS(MetaTaskModel):
         self.lr = lr
         self.max_epoch = max_epoch
         self.fitted = False
+        self.alpha = alpha
+        self.loss_skip_thresh = loss_skip_thresh
         torch.manual_seed(seed)
 
     def run_epoch(self, phase, task_list, epoch, opt, loss_l, ignore_weight=False):
@@ -89,18 +94,19 @@ class MetaModelDS(MetaTaskModel):
                 criterion = nn.MSELoss()
                 loss = criterion(pred, meta_input["y_test"])
             elif self.criterion == "ic_loss":
-                criterion = ICLoss()
+                criterion = ICLoss(self.loss_skip_thresh)
                 try:
-                    loss = criterion(pred, meta_input["y_test"], meta_input["test_idx"], skip_size=50)
+                    loss = criterion(pred, meta_input["y_test"], meta_input["test_idx"])
                 except ValueError as e:
                     get_module_logger("MetaModelDS").warning(f"Exception `{e}` when calculating IC loss")
                     continue
+            else:
+                raise ValueError(f"Unknown criterion: {self.criterion}")
 
             assert not np.isnan(loss.detach().item()), "NaN loss!"
 
             if phase == "train":
                 opt.zero_grad()
-                norm_loss = nn.MSELoss()
                 loss.backward()
                 opt.step()
             elif phase == "test":
@@ -148,7 +154,11 @@ class MetaModelDS(MetaTaskModel):
             )  # debug: record when the test phase starts
 
         self.tn = PredNet(
-            step=self.step, hist_step_n=self.hist_step_n, clip_weight=self.clip_weight, clip_method=self.clip_method
+            step=self.step,
+            hist_step_n=self.hist_step_n,
+            clip_weight=self.clip_weight,
+            clip_method=self.clip_method,
+            alpha=self.alpha,
         )
 
         opt = optim.Adam(self.tn.parameters(), lr=self.lr)

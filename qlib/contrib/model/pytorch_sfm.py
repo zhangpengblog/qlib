@@ -4,7 +4,6 @@
 from __future__ import division
 from __future__ import print_function
 
-import os
 import numpy as np
 import pandas as pd
 from typing import Text, Union
@@ -85,7 +84,7 @@ class SFM_Model(nn.Module):
             if len(self.states) == 0:  # hasn't initialized yet
                 self.init_states(x)
             self.get_constants(x)
-            p_tm1 = self.states[0]
+            p_tm1 = self.states[0]  # noqa: F841
             h_tm1 = self.states[1]
             S_re_tm1 = self.states[2]
             S_im_tm1 = self.states[3]
@@ -213,7 +212,7 @@ class SFM(Model):
         optimizer="gd",
         GPU=0,
         seed=None,
-        **kwargs
+        **kwargs,
     ):
         # Set logger.
         self.logger = get_module_logger("SFM")
@@ -307,7 +306,6 @@ class SFM(Model):
         return self.device != torch.device("cpu")
 
     def test_epoch(self, data_x, data_y):
-
         # prepare training data
         x_values = data_x.values
         y_values = np.squeeze(data_y.values)
@@ -320,7 +318,6 @@ class SFM(Model):
         indices = np.arange(len(x_values))
 
         for i in range(len(indices))[:: self.batch_size]:
-
             if len(indices) - i < self.batch_size:
                 break
 
@@ -337,7 +334,6 @@ class SFM(Model):
         return np.mean(losses), np.mean(scores)
 
     def train_epoch(self, x_train, y_train):
-
         x_train_values = x_train.values
         y_train_values = np.squeeze(y_train.values)
 
@@ -347,7 +343,6 @@ class SFM(Model):
         np.random.shuffle(indices)
 
         for i in range(len(indices))[:: self.batch_size]:
-
             if len(indices) - i < self.batch_size:
                 break
 
@@ -368,7 +363,6 @@ class SFM(Model):
         evals_result=dict(),
         save_path=None,
     ):
-
         df_train, df_valid = dataset.prepare(
             ["train", "valid"],
             col_set=["feature", "label"],
@@ -432,10 +426,9 @@ class SFM(Model):
         raise ValueError("unknown loss `%s`" % self.loss)
 
     def metric_fn(self, pred, label):
-
         mask = torch.isfinite(label)
 
-        if self.metric == "" or self.metric == "loss":
+        if self.metric in ("", "loss"):
             return -self.loss_fn(pred[mask], label[mask])
 
         raise ValueError("unknown metric `%s`" % self.metric)

@@ -6,7 +6,6 @@ This order generator is for strategies based on WeightStrategyBase
 """
 from ...backtest.position import Position
 from ...backtest.exchange import Exchange
-from ...backtest.decision import BaseTradeDecision, TradeDecisionWO
 
 import pandas as pd
 import copy
@@ -34,10 +33,14 @@ class OrderGenerator:
         :type target_weight_position: dict
         :param risk_degree:
         :type risk_degree: float
-        :param pred_date: the date the score is predicted
-        :type pred_date: pd.Timestamp
-        :param trade_date: the date the stock is traded
-        :type trade_date: pd.Timestamp
+        :param pred_start_time:
+        :type pred_start_time: pd.Timestamp
+        :param pred_end_time:
+        :type pred_end_time: pd.Timestamp
+        :param trade_start_time:
+        :type trade_start_time: pd.Timestamp
+        :param trade_end_time:
+        :type trade_end_time: pd.Timestamp
 
         :rtype: list
         """
@@ -73,10 +76,14 @@ class OrderGenWInteract(OrderGenerator):
         :type target_weight_position: dict
         :param risk_degree:
         :type risk_degree: float
-        :param pred_date:
-        :type pred_date: pd.Timestamp
-        :param trade_date:
-        :type trade_date: pd.Timestamp
+        :param pred_start_time:
+        :type pred_start_time: pd.Timestamp
+        :param pred_end_time:
+        :type pred_end_time: pd.Timestamp
+        :param trade_start_time:
+        :type trade_start_time: pd.Timestamp
+        :param trade_end_time:
+        :type trade_end_time: pd.Timestamp
 
         :rtype: list
         """
@@ -148,9 +155,12 @@ class OrderGenWOInteract(OrderGenerator):
     ) -> list:
         """generate_order_list_from_target_weight_position
 
-        generate order list directly not using the information (e.g. whether can be traded, the accurate trade price) at trade date.
-        In target weight position, generating order list need to know the price of objective stock in trade date, but we cannot get that
-        value when do not interact with exchange, so we check the %close price at pred_date or price recorded in current position.
+        generate order list directly not using the information (e.g. whether can be traded, the accurate trade price)
+         at trade date.
+        In target weight position, generating order list need to know the price of objective stock in trade date,
+        but we cannot get that
+        value when do not interact with exchange, so we check the %close price at pred_date or price recorded
+        in current position.
 
         :param current:
         :type current: Position
@@ -160,10 +170,14 @@ class OrderGenWOInteract(OrderGenerator):
         :type target_weight_position: dict
         :param risk_degree:
         :type risk_degree: float
-        :param pred_date:
-        :type pred_date: pd.Timestamp
-        :param trade_date:
-        :type trade_date: pd.Timestamp
+        :param pred_start_time:
+        :type pred_start_time: pd.Timestamp
+        :param pred_end_time:
+        :type pred_end_time: pd.Timestamp
+        :param trade_start_time:
+        :type trade_start_time: pd.Timestamp
+        :param trade_end_time:
+        :type trade_end_time: pd.Timestamp
 
         :rtype: list of generated orders
         """
@@ -186,7 +200,8 @@ class OrderGenWOInteract(OrderGenerator):
                     * target_weight_position[stock_id]
                     / trade_exchange.get_close(stock_id, start_time=pred_start_time, end_time=pred_end_time)
                 )
-                # TODO: Qlib use None to represent trading suspension. So last close price can't be the estimated trading price.
+                # TODO: Qlib use None to represent trading suspension.
+                #  So last close price can't be the estimated trading price.
                 # Maybe a close price with forward fill will be a better solution.
             elif stock_id in current_stock:
                 amount_dict[stock_id] = (
